@@ -12,5 +12,5 @@ import './slack.js';
 // telegram
 import './telegram.js';
 
-// whatsapp
-import './whatsapp.js';
+// telegram-swarm
+import './telegram-swarm.js';
