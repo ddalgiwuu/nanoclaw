@@ -1,0 +1,3 @@
+#!/bin/bash
+# Wrapper: agent-browser -> gstack browse binary
+exec ~/.claude/skills/gstack/browse/dist/browse "$@"
