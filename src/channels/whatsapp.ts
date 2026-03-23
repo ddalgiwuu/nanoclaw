@@ -22,6 +22,7 @@ import {
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { isImageMessage, processImage } from '../image.js';
 import { logger } from '../logger.js';
+import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
   Channel,
   OnInboundMessage,
@@ -225,7 +226,7 @@ export class WhatsAppChannel implements Channel {
             }
 
             // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-            if (!content) continue;
+            if (!content && !isVoiceMessage(msg)) continue;
 
             const sender = msg.key.participant || msg.key.remoteJid || '';
             const senderName = msg.pushName || sender.split('@')[0];
@@ -235,16 +236,33 @@ export class WhatsAppChannel implements Channel {
             // since only the bot sends from that number.
             // With shared number, bot messages carry the assistant name prefix
             // (even in DMs/self-chat) so we check for that.
+            // Transcribe voice messages before storing
+            let finalContent = content;
+            if (isVoiceMessage(msg)) {
+              try {
+                const transcript = await transcribeAudioMessage(msg, this.sock);
+                if (transcript) {
+                  finalContent = `[Voice: ${transcript}]`;
+                  logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+                } else {
+                  finalContent = '[Voice Message - transcription unavailable]';
+                }
+              } catch (err) {
+                logger.error({ err }, 'Voice transcription error');
+                finalContent = '[Voice Message - transcription failed]';
+              }
+            }
+
             const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
               ? fromMe
-              : content.startsWith(`${ASSISTANT_NAME}:`);
+              : finalContent.startsWith(`${ASSISTANT_NAME}:`);
 
             this.opts.onMessage(chatJid, {
               id: msg.key.id || '',
               chat_jid: chatJid,
               sender,
               sender_name: senderName,
-              content,
+              content: finalContent,
               timestamp,
               is_from_me: fromMe,
               is_bot_message: isBotMessage,
