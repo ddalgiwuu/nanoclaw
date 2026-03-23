@@ -99,10 +99,7 @@ export class TelegramSwarmChannel implements Channel {
 
       bot.on('message:text', async (ctx) => {
         if (ctx.message.text.startsWith('/')) {
-          const cmd = ctx.message.text
-            .slice(1)
-            .split(/[\s@]/)[0]
-            .toLowerCase();
+          const cmd = ctx.message.text.slice(1).split(/[\s@]/)[0].toLowerCase();
           if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
         }
 
@@ -211,9 +208,7 @@ export class TelegramSwarmChannel implements Channel {
 
       bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
       bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-      bot.on('message:voice', (ctx) =>
-        storeNonText(ctx, '[Voice message]'),
-      );
+      bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
       bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
       bot.on('message:document', (ctx) => {
         const name = ctx.message.document?.file_name || 'file';
@@ -223,9 +218,7 @@ export class TelegramSwarmChannel implements Channel {
         const emoji = ctx.message.sticker?.emoji || '';
         storeNonText(ctx, `[Sticker ${emoji}]`);
       });
-      bot.on('message:location', (ctx) =>
-        storeNonText(ctx, '[Location]'),
-      );
+      bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
       bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
       bot.catch((err) => {
@@ -247,9 +240,7 @@ export class TelegramSwarmChannel implements Channel {
               },
               'Telegram swarm bot connected',
             );
-            console.log(
-              `  Telegram swarm bot #${index}: @${botInfo.username}`,
-            );
+            console.log(`  Telegram swarm bot #${index}: @${botInfo.username}`);
             resolve();
           },
         });
@@ -257,9 +248,7 @@ export class TelegramSwarmChannel implements Channel {
     });
 
     await Promise.all(connectPromises);
-    console.log(
-      `  Telegram swarm: ${this.bots.length} bot(s) connected\n`,
-    );
+    console.log(`  Telegram swarm: ${this.bots.length} bot(s) connected\n`);
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -332,10 +321,7 @@ export class TelegramSwarmChannel implements Channel {
     try {
       await swarmBot.bot.api.sendChatAction(chatId, 'typing');
     } catch (err) {
-      logger.debug(
-        { jid, err },
-        'Failed to send swarm typing indicator',
-      );
+      logger.debug({ jid, err }, 'Failed to send swarm typing indicator');
     }
   }
 }
@@ -343,13 +329,9 @@ export class TelegramSwarmChannel implements Channel {
 registerChannel('telegram-swarm', (opts: ChannelOpts) => {
   const envVars = readEnvFile(['TELEGRAM_SWARM_TOKENS']);
   const raw =
-    process.env.TELEGRAM_SWARM_TOKENS ||
-    envVars.TELEGRAM_SWARM_TOKENS ||
-    '';
+    process.env.TELEGRAM_SWARM_TOKENS || envVars.TELEGRAM_SWARM_TOKENS || '';
   if (!raw) {
-    logger.debug(
-      'Telegram Swarm: TELEGRAM_SWARM_TOKENS not set, skipping',
-    );
+    logger.debug('Telegram Swarm: TELEGRAM_SWARM_TOKENS not set, skipping');
     return null;
   }
 
