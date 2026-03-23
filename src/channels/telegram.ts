@@ -1,4 +1,6 @@
+import fs from 'fs';
 import https from 'https';
+import path from 'path';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
@@ -38,6 +40,70 @@ async function sendTelegramMessage(
     // Fallback: send as plain text if Markdown parsing fails
     logger.debug({ err }, 'Markdown send failed, falling back to plain text');
     await api.sendMessage(chatId, text, options);
+  }
+}
+
+/**
+ * Download a Telegram file to a local path.
+ * Returns the local file path on success, or null on failure.
+ */
+async function downloadTelegramFile(
+  bot: Bot,
+  fileId: string,
+  destPath: string,
+): Promise<string | null> {
+  try {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) return null;
+
+    const url = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, buffer);
+    return destPath;
+  } catch (err) {
+    logger.debug({ err, fileId }, 'Failed to download Telegram file');
+    return null;
+  }
+}
+
+/**
+ * Transcribe audio using Groq Whisper API.
+ * Returns the transcription text, or null if unavailable.
+ */
+async function transcribeWithGroq(filePath: string): Promise<string | null> {
+  const apiKey =
+    process.env.GROQ_API_KEY || readEnvFile(['GROQ_API_KEY']).GROQ_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const fileData = fs.readFileSync(filePath);
+    const formData = new FormData();
+    formData.append('file', new Blob([fileData]), path.basename(filePath));
+    formData.append('model', 'whisper-large-v3');
+
+    const res = await fetch(
+      'https://api.groq.com/openai/v1/audio/transcriptions',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+      },
+    );
+
+    if (!res.ok) {
+      logger.debug({ status: res.status }, 'Groq transcription failed');
+      return null;
+    }
+
+    const data = (await res.json()) as { text?: string };
+    return data.text || null;
+  } catch (err) {
+    logger.debug({ err }, 'Groq transcription error');
+    return null;
   }
 }
 
@@ -199,9 +265,56 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      // Download the largest photo size
+      const photos = ctx.message.photo;
+      const largest = photos[photos.length - 1];
+      const destDir = '/tmp/nanoclaw-media';
+      const destPath = `${destDir}/photo_${ctx.message.message_id}.jpg`;
+      const localPath = await downloadTelegramFile(
+        this.bot!,
+        largest.file_id,
+        destPath,
+      );
+
+      const placeholder = localPath ? `[Image: ${localPath}]` : '[Photo]';
+      storeNonText(ctx, placeholder);
+    });
+
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+
+    this.bot.on('message:voice', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      // Download voice file
+      const voice = ctx.message.voice;
+      const destDir = '/tmp/nanoclaw-media';
+      const destPath = `${destDir}/voice_${ctx.message.message_id}.ogg`;
+      const localPath = await downloadTelegramFile(
+        this.bot!,
+        voice.file_id,
+        destPath,
+      );
+
+      if (localPath) {
+        // Try transcription via Groq Whisper
+        const transcription = await transcribeWithGroq(localPath);
+        if (transcription) {
+          storeNonText(ctx, `[Voice message transcription: ${transcription}]`);
+        } else {
+          storeNonText(ctx, `[Voice message: ${localPath}]`);
+        }
+      } else {
+        storeNonText(ctx, '[Voice message]');
+      }
+    });
+
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
