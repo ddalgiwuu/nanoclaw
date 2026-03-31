@@ -31,6 +31,10 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  enableTeamAgent?: boolean;
+  maxSubagents?: number;
+  subagentDepth?: number;
+  maxSpawnDepth?: number;
 }
 
 interface ContainerOutput {
@@ -60,6 +64,7 @@ interface SDKUserMessage {
 
 const IPC_BASE_DIR = process.env.NANOCLAW_IPC_DIR || '/workspace/ipc';
 const IPC_INPUT_DIR = path.join(IPC_BASE_DIR, 'input');
+const IPC_ANNOUNCE_DIR = path.join(IPC_BASE_DIR, 'announce');
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
@@ -346,6 +351,48 @@ function drainIpcInput(): string[] {
 }
 
 /**
+ * Drain announce messages from subagents (progress updates).
+ * Returns formatted announce messages for injection into conversation.
+ */
+function drainAnnounceMessages(): string[] {
+  try {
+    fs.mkdirSync(IPC_ANNOUNCE_DIR, { recursive: true });
+    const files = fs
+      .readdirSync(IPC_ANNOUNCE_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+
+    const messages: string[] = [];
+    for (const file of files) {
+      const filePath = path.join(IPC_ANNOUNCE_DIR, file);
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        fs.unlinkSync(filePath);
+        if (data.type === 'announce' && data.message) {
+          const progress = data.progress !== undefined ? `[${data.progress}%] ` : '';
+          const status = data.status ? `(${data.status}) ` : '';
+          const fromDepth = data.fromDepth !== undefined ? `[Subagent depth ${data.fromDepth}] ` : '';
+          messages.push(`[ANNOUNCE] ${fromDepth}${progress}${status}${data.message}`);
+        }
+      } catch (err) {
+        log(
+          `Failed to process announce file ${file}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    return messages;
+  } catch (err) {
+    log(`Announce drain error: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+/**
  * Wait for a new IPC message or _close sentinel.
  * Returns the messages as a single string, or null if _close.
  */
@@ -357,8 +404,10 @@ function waitForIpcMessage(): Promise<string | null> {
         return;
       }
       const messages = drainIpcInput();
-      if (messages.length > 0) {
-        resolve(messages.join('\n'));
+      const announces = drainAnnounceMessages();
+      const allMessages = [...messages, ...announces];
+      if (allMessages.length > 0) {
+        resolve(allMessages.join('\n'));
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -379,7 +428,8 @@ async function runQuery(
   mcpServerPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
-  resumeAt?: string,
+  resumeAt: string | undefined,
+  teamModeEnabled: boolean,
 ): Promise<{
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -400,9 +450,16 @@ async function runQuery(
       ipcPolling = false;
       return;
     }
+    // Regular IPC messages (user input, subagent results)
     const messages = drainIpcInput();
     for (const text of messages) {
       log(`Piping IPC message into active query (${text.length} chars)`);
+      stream.push(text);
+    }
+    // Announce messages from subagents (progress updates)
+    const announces = drainAnnounceMessages();
+    for (const text of announces) {
+      log(`Piping announce message into active query (${text.length} chars)`);
       stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
@@ -413,6 +470,7 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let lastTextResult: string | null = null;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = path.join(GLOBAL_DIR, 'CLAUDE.md');
@@ -436,6 +494,54 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Build allowed tools list - Task tools always enabled with depth-based limits
+  // Depth-based enforcement happens at spawn time, not by hiding tools
+  const allowedTools = [
+    'Bash',
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'WebSearch',
+    'WebFetch',
+    'Task',
+    'TaskOutput',
+    'TaskStop',
+    'SendMessage',
+    'TodoWrite',
+    'ToolSearch',
+    'Skill',
+    'NotebookEdit',
+    'mcp__nanoclaw__*',
+  ];
+
+  // Calculate current depth and determine spawn capability
+  const currentDepth = containerInput.subagentDepth || 0;
+  const maxSpawnDepth = containerInput.maxSpawnDepth || 1; // Default: 1 (main can spawn, subagents cannot)
+  const canSpawnSubagents = currentDepth < maxSpawnDepth;
+  const maxSubagents = containerInput.maxSubagents || 3;
+
+  // Build system prompt with subagent limit information
+  let subagentPrompt = '';
+  if (currentDepth === 0) {
+    // Main agent
+    subagentPrompt = `\n\n[SUBAGENT INFO] You are at depth 0 (main agent). You can spawn up to ${maxSubagents} subagents. Current max spawn depth: ${maxSpawnDepth}.`;
+    if (maxSpawnDepth >= 2) {
+      subagentPrompt += ' Subagents you spawn can also spawn their own subagents (orchestrator pattern).';
+    }
+  } else if (canSpawnSubagents) {
+    // Orchestrator subagent (depth 1 with maxSpawnDepth >= 2)
+    subagentPrompt = `\n\n[SUBAGENT INFO] You are at depth ${currentDepth} (orchestrator). You can spawn subagents. Max depth: ${maxSpawnDepth}.`;
+  } else {
+    // Leaf subagent - cannot spawn
+    subagentPrompt = `\n\n[SUBAGENT INFO] You are at depth ${currentDepth} (leaf). You cannot spawn subagents. Max depth reached (${maxSpawnDepth}).`;
+  }
+
+  const fullSystemPrompt = globalClaudeMd
+    ? globalClaudeMd + subagentPrompt
+    : subagentPrompt;
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -443,34 +549,12 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? {
-            type: 'preset' as const,
-            preset: 'claude_code' as const,
-            append: globalClaudeMd,
-          }
-        : undefined,
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Write',
-        'Edit',
-        'Glob',
-        'Grep',
-        'WebSearch',
-        'WebFetch',
-        'Task',
-        'TaskOutput',
-        'TaskStop',
-        'TeamCreate',
-        'TeamDelete',
-        'SendMessage',
-        'TodoWrite',
-        'ToolSearch',
-        'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-      ],
+      systemPrompt: {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+        append: fullSystemPrompt,
+      },
+      allowedTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -483,6 +567,8 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_SUBAGENT_DEPTH: String(currentDepth),
+            NANOCLAW_MAX_SPAWN_DEPTH: String(maxSpawnDepth),
           },
         },
       },
@@ -530,6 +616,13 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
+      // Write output immediately so the host-runner sees OUTPUT markers on stdout.
+      // This is critical: the host-runner's idle timer only starts when it receives
+      // streaming output. If we defer writeOutput() until after the query loop,
+      // the host never writes _close, the query loop never ends, and we deadlock.
+      if (textResult) {
+        lastTextResult = textResult;
+      }
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -542,6 +635,7 @@ async function runQuery(
   log(
     `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
   );
+
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
@@ -588,43 +682,85 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Detect /team command and handle planning phase
+  const isTeamCommand = prompt.trim().startsWith('/team');
+  let teamPlanningMode = false;
+  let teamModeEnabled = containerInput.enableTeamAgent || false;
+  let maxSubagents = containerInput.maxSubagents || 3; // Default: 3 subagents
+  
+  if (isTeamCommand) {
+    // Enter planning mode - strip /team prefix and add planning instructions
+    const teamPrompt = prompt.trim().slice(5).trim();
+    prompt = `[TEAM AGENT PLANNING MODE]
+The user wants to use Agent Teams for: "${teamPrompt}"
+
+You are in PLANNING MODE. You can spawn subagents, but first let's plan.
+
+Current limit: ${maxSubagents} subagents (default).
+
+Propose a plan:
+1. How many subagents are needed? (you can request more than ${maxSubagents} if needed)
+2. What is the role of each subagent?
+3. How should work be divided?
+
+Present your plan clearly. The user can:
+- Confirm with "yes" (uses proposed count)
+- Specify a number: "yes, use 5" (changes limit to 5)
+- Suggest changes
+
+User's request: ${teamPrompt}`;
+    teamPlanningMode = true;
+    log('Entered team agent planning mode');
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
     while (true) {
-      log(
-        `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
-      );
+      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, teamMode: ${teamModeEnabled}, maxSubagents: ${maxSubagents}, planning: ${teamPlanningMode})...`);
 
+      // Enable team mode after planning is confirmed
+      if (teamPlanningMode) {
+        // Check if user confirmed the plan
+        const lowerPrompt = prompt.toLowerCase().trim();
+        const yesMatch = lowerPrompt.match(/^yes(?:,?\s*use\s*(\d+))?/);
+        if (yesMatch) {
+          teamPlanningMode = false;
+          teamModeEnabled = true; // Mark as team mode for logging
+          // Enable orchestrator pattern: allow subagents to spawn their own subagents
+          containerInput.maxSpawnDepth = 2;
+          // Update max subagents if user specified a number
+          if (yesMatch[1]) {
+            maxSubagents = parseInt(yesMatch[1], 10);
+            log(`Team plan confirmed with ${maxSubagents} subagents, maxSpawnDepth: 2`);
+          } else {
+            log('Team plan confirmed, using proposed subagent count, maxSpawnDepth: 2');
+          }
+          // Update prompt to proceed with execution
+          prompt = `[TEAM AGENT EXECUTION MODE]\n\nProceed with the planned team execution. You can use up to ${maxSubagents} subagents. Subagents can also spawn their own subagents (orchestrator pattern).\n\nOriginal request: ${prompt}`;
+        }
+      }
+
+      // Create container input with current settings
+      const currentContainerInput = {
+        ...containerInput,
+        maxSubagents,
+        maxSpawnDepth: containerInput.maxSpawnDepth || 1, // Default: depth 1 (main can spawn, subagents cannot)
+      };
       const queryResult = await runQuery(
-        prompt,
-        sessionId,
-        mcpServerPath,
-        containerInput,
-        sdkEnv,
-        resumeAt,
+        prompt, sessionId, mcpServerPath, currentContainerInput, sdkEnv, resumeAt, teamModeEnabled,
       );
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
-      }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
-      }
+      if (queryResult.newSessionId) sessionId = queryResult.newSessionId;
+      if (queryResult.lastAssistantUuid) resumeAt = queryResult.lastAssistantUuid;
 
-      // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;
       }
 
-      // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
-
       log('Query ended, waiting for next IPC message...');
 
-      // Wait for the next message or _close sentinel
       const nextMessage = await waitForIpcMessage();
       if (nextMessage === null) {
         log('Close sentinel received, exiting');

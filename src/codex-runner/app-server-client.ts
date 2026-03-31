@@ -94,18 +94,33 @@ export class CodexAppServerClient {
   async start(): Promise<void> {
     if (this.proc) return;
 
-    const codexPackagePath = this.require.resolve('@openai/codex/package.json');
-    const codexBin = path.join(
-      path.dirname(codexPackagePath),
-      'bin',
-      'codex.js',
-    );
+    // Prefer system-installed codex binary (supports chatgpt OAuth + app-server natively)
+    // Falls back to npm package codex.js if system binary not found
+    const systemCodex = '/opt/homebrew/bin/codex';
+    const fs = await import('fs');
+    const hasSystemCodex = fs.existsSync(systemCodex);
 
-    this.proc = spawn(process.execPath, [codexBin, 'app-server'], {
-      cwd: this.cwd,
-      env: this.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    if (hasSystemCodex) {
+      this.log(`Using system codex binary: ${systemCodex}`);
+      this.proc = spawn(systemCodex, ['app-server'], {
+        cwd: this.cwd,
+        env: this.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      const codexPackagePath = this.require.resolve('@openai/codex/package.json');
+      const codexBin = path.join(
+        path.dirname(codexPackagePath),
+        'bin',
+        'codex.js',
+      );
+      this.log(`Using npm codex: ${codexBin}`);
+      this.proc = spawn(process.execPath, [codexBin, 'app-server'], {
+        cwd: this.cwd,
+        env: this.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
 
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk: string) => {

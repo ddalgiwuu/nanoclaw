@@ -7,6 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
@@ -14,19 +15,36 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = process.env.NANOCLAW_IPC_DIR || '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const ANNOUNCE_DIR = path.join(IPC_DIR, 'announce');
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const subagentDepth = parseInt(process.env.NANOCLAW_SUBAGENT_DEPTH || '0', 10);
+const maxSpawnDepth = parseInt(process.env.NANOCLAW_MAX_SPAWN_DEPTH || '1', 10);
 
-function writeIpcFile(dir: string, data: object): string {
+// Determine if this agent can spawn subagents based on depth limits
+const canSpawnSubagents = subagentDepth < maxSpawnDepth;
+
+function writeIpcFile(dir: string, data: object, dedupContent?: string): string {
   fs.mkdirSync(dir, { recursive: true });
 
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  const filepath = path.join(dir, filename);
+  // If dedupContent provided, use hash-based filename to prevent duplicate files
+  let filename: string;
+  if (dedupContent) {
+    const hash = createHash('sha256').update(dedupContent).digest('hex').slice(0, 16);
+    filename = `${Date.now()}-${hash}.json`;
+    // Check if a file with same hash already exists (within last few seconds)
+    const existing = fs.readdirSync(dir).filter(f => f.includes(hash) && f.endsWith('.json'));
+    if (existing.length > 0) {
+      return existing[0]; // Already written, skip
+    }
+  } else {
+    filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  }
 
-  // Atomic write: temp file then rename
+  const filepath = path.join(dir, filename);
   const tempPath = `${filepath}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
   fs.renameSync(tempPath, filepath);
@@ -39,9 +57,46 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
+// File-based dedup: shared across ALL MCP server processes (Agent Teams subagents)
+const SENT_HASHES_DIR = path.join(IPC_DIR, 'sent_hashes');
+
+function hasAlreadySent(hash: string): boolean {
+  fs.mkdirSync(SENT_HASHES_DIR, { recursive: true });
+  const lockFile = path.join(SENT_HASHES_DIR, hash);
+  if (fs.existsSync(lockFile)) {
+    // Check if lock is recent (< 5 seconds)
+    try {
+      const stat = fs.statSync(lockFile);
+      if (Date.now() - stat.mtimeMs < 5 * 1000) return true;
+    } catch { /* ignore */ }
+  }
+  return false;
+}
+
+function markAsSent(hash: string): void {
+  fs.mkdirSync(SENT_HASHES_DIR, { recursive: true });
+  fs.writeFileSync(path.join(SENT_HASHES_DIR, hash), String(Date.now()));
+}
+
+function cleanOldHashes(): void {
+  try {
+    if (!fs.existsSync(SENT_HASHES_DIR)) return;
+    const cutoff = Date.now() - 60 * 1000;
+    for (const f of fs.readdirSync(SENT_HASHES_DIR)) {
+      const p = path.join(SENT_HASHES_DIR, f);
+      try {
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+// Clean old hashes on startup
+cleanOldHashes();
+
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. You can optionally attach an image file.",
+  "Send a message to the user or group. You can call this for progress updates or final responses.",
   {
     text: z.string().describe('The message text to send'),
     sender: z
@@ -54,10 +109,11 @@ server.tool(
       .string()
       .optional()
       .describe(
-        'Absolute path to an image file to send as a photo (e.g. /workspace/groups/my-group/images/chart.png)',
+        'Absolute path to an image file to send as a photo',
       ),
   },
   async (args) => {
+    // Dedup is handled by IPC watcher (DB-level), no file-based lock needed here.
     const data: Record<string, string | undefined> = {
       type: 'message',
       chatJid,
@@ -65,10 +121,11 @@ server.tool(
       sender: args.sender || undefined,
       image: args.image || undefined,
       groupFolder,
+      agentType: process.env.NANOCLAW_AGENT_TYPE || 'claude-code',
       timestamp: new Date().toISOString(),
     };
 
-    writeIpcFile(MESSAGES_DIR, data);
+    writeIpcFile(MESSAGES_DIR, data, chatJid + args.text.slice(0, 200));
 
     return {
       content: [
@@ -82,310 +139,97 @@ server.tool(
 );
 
 server.tool(
-  'schedule_task',
-  `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
-
-CONTEXT MODE - Choose based on task type:
-\u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
-\u2022 "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
-
-If unsure which mode to use, you can ask the user. Examples:
-- "Remind me about our discussion" \u2192 group (needs conversation context)
-- "Check the weather every morning" \u2192 isolated (self-contained task)
-- "Follow up on my request" \u2192 group (needs to know what was requested)
-- "Generate a daily report" \u2192 isolated (just needs instructions in prompt)
-
-MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It can also use send_message for immediate delivery, or wrap output in <internal> tags to suppress it. Include guidance in the prompt about whether the agent should:
-\u2022 Always send a message (e.g., reminders, daily briefings)
-\u2022 Only send a message when there's something to report (e.g., "notify me if...")
-\u2022 Never send a message (background maintenance tasks)
-
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
-\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
-\u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+  'send_reaction',
+  'React to the latest user message with an emoji. Use this to acknowledge messages, show you understood, or react naturally.',
   {
-    prompt: z
-      .string()
-      .describe(
-        'What the agent should do when the task runs. For isolated mode, include all necessary context here.',
-      ),
-    schedule_type: z
-      .enum(['cron', 'interval', 'once'])
-      .describe(
-        'cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time',
-      ),
-    schedule_value: z
-      .string()
-      .describe(
-        'cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)',
-      ),
-    context_mode: z
-      .enum(['group', 'isolated'])
-      .default('group')
-      .describe(
-        'group=runs with chat history and memory, isolated=fresh session (include context in prompt)',
-      ),
-    target_group_jid: z
-      .string()
-      .optional()
-      .describe(
-        '(Main group only) JID of the group to schedule the task for. Defaults to the current group.',
-      ),
+    emoji: z.string().describe('The emoji to react with (e.g. "👍", "❤️", "😂", "🤔", "✅")'),
   },
   async (args) => {
-    // Validate schedule_value before writing IPC
-    if (args.schedule_type === 'cron') {
-      try {
-        CronExpressionParser.parse(args.schedule_value);
-      } catch {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    } else if (args.schedule_type === 'interval') {
-      const ms = parseInt(args.schedule_value, 10);
-      if (isNaN(ms) || ms <= 0) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    } else if (args.schedule_type === 'once') {
-      if (
-        /[Zz]$/.test(args.schedule_value) ||
-        /[+-]\d{2}:\d{2}$/.test(args.schedule_value)
-      ) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}" — use format like "2026-02-01T15:30:00".`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      const date = new Date(args.schedule_value);
-      if (isNaN(date.getTime())) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Invalid timestamp: "${args.schedule_value}". Use local time format like "2026-02-01T15:30:00".`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    // Non-main groups can only schedule for themselves
-    const targetJid =
-      isMain && args.target_group_jid ? args.target_group_jid : chatJid;
-
-    const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    const data = {
-      type: 'schedule_task',
-      taskId,
-      prompt: args.prompt,
-      schedule_type: args.schedule_type,
-      schedule_value: args.schedule_value,
-      context_mode: args.context_mode || 'group',
-      targetJid,
-      createdBy: groupFolder,
-      timestamp: new Date().toISOString(),
-    };
-
-    writeIpcFile(TASKS_DIR, data);
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}`,
-        },
-      ],
-    };
-  },
-);
-
-server.tool(
-  'list_tasks',
-  "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks.",
-  {},
-  async () => {
-    const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
-
-    try {
-      if (!fs.existsSync(tasksFile)) {
-        return {
-          content: [
-            { type: 'text' as const, text: 'No scheduled tasks found.' },
-          ],
-        };
-      }
-
-      const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
-
-      const tasks = isMain
-        ? allTasks
-        : allTasks.filter(
-            (t: { groupFolder: string }) => t.groupFolder === groupFolder,
-          );
-
-      if (tasks.length === 0) {
-        return {
-          content: [
-            { type: 'text' as const, text: 'No scheduled tasks found.' },
-          ],
-        };
-      }
-
-      const formatted = tasks
-        .map(
-          (t: {
-            id: string;
-            prompt: string;
-            schedule_type: string;
-            schedule_value: string;
-            status: string;
-            next_run: string;
-          }) =>
-            `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
-        )
-        .join('\n');
-
-      return {
-        content: [
-          { type: 'text' as const, text: `Scheduled tasks:\n${formatted}` },
-        ],
-      };
-    } catch (err) {
+    // Only the main agent can send reactions.
+    if (!isMain) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`,
+            text: '[send_reaction blocked: Only the main agent can send reactions.]',
           },
         ],
+        isError: true,
       };
     }
-  },
-);
 
-server.tool(
-  'pause_task',
-  'Pause a scheduled task. It will not run until resumed.',
-  { task_id: z.string().describe('The task ID to pause') },
-  async (args) => {
     const data = {
-      type: 'pause_task',
-      taskId: args.task_id,
+      type: 'reaction',
+      chatJid,
+      emoji: args.emoji,
       groupFolder,
-      isMain,
       timestamp: new Date().toISOString(),
     };
 
-    writeIpcFile(TASKS_DIR, data);
+    writeIpcFile(MESSAGES_DIR, data);
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${args.task_id} pause requested.`,
-        },
-      ],
-    };
+    return { content: [{ type: 'text' as const, text: `Reacted with ${args.emoji}` }] };
   },
 );
 
-server.tool(
-  'resume_task',
-  'Resume a paused task.',
-  { task_id: z.string().describe('The task ID to resume') },
-  async (args) => {
-    const data = {
-      type: 'resume_task',
-      taskId: args.task_id,
-      groupFolder,
-      isMain,
-      timestamp: new Date().toISOString(),
-    };
+// Task management tools - available based on depth limits
+// Agents can spawn subagents only if currentDepth < maxSpawnDepth
+if (canSpawnSubagents) {
+  server.tool(
+    'schedule_task',
+    `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
-    writeIpcFile(TASKS_DIR, data);
+CONTEXT MODE - Choose based on task type:
+• "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
+• "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${args.task_id} resume requested.`,
-        },
-      ],
-    };
-  },
-);
+If unsure which mode to use, you can ask the user. Examples:
+- "Remind me about our discussion" → group (needs conversation context)
+- "Check the weather every morning" → isolated (self-contained task)
+- "Follow up on my request" → group (needs to know what was requested)
+- "Generate a daily report" → isolated (just needs instructions in prompt)
 
-server.tool(
-  'cancel_task',
-  'Cancel and delete a scheduled task.',
-  { task_id: z.string().describe('The task ID to cancel') },
-  async (args) => {
-    const data = {
-      type: 'cancel_task',
-      taskId: args.task_id,
-      groupFolder,
-      isMain,
-      timestamp: new Date().toISOString(),
-    };
+MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It can also use send_message for immediate delivery, or wrap output in <internal> tags to suppress it. Include guidance in the prompt about whether the agent should:
+• Always send a message (e.g., reminders, daily briefings)
+• Only send a message when there's something to report (e.g., "notify me if...")
+• Never send a message (background maintenance tasks)
 
-    writeIpcFile(TASKS_DIR, data);
-
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${args.task_id} cancellation requested.`,
-        },
-      ],
-    };
-  },
-);
-
-server.tool(
-  'update_task',
-  'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
-  {
-    task_id: z.string().describe('The task ID to update'),
-    prompt: z.string().optional().describe('New prompt for the task'),
-    schedule_type: z
-      .enum(['cron', 'interval', 'once'])
-      .optional()
-      .describe('New schedule type'),
-    schedule_value: z
-      .string()
-      .optional()
-      .describe('New schedule value (see schedule_task for format)'),
-  },
-  async (args) => {
-    // Validate schedule_value if provided
-    if (
-      args.schedule_type === 'cron' ||
-      (!args.schedule_type && args.schedule_value)
-    ) {
-      if (args.schedule_value) {
+SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
+• cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
+• interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
+• once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+    {
+      prompt: z
+        .string()
+        .describe(
+          'What the agent should do when the task runs. For isolated mode, include all necessary context here.',
+        ),
+      schedule_type: z
+        .enum(['cron', 'interval', 'once'])
+        .describe(
+          'cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time',
+        ),
+      schedule_value: z
+        .string()
+        .describe(
+          'cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)',
+        ),
+      context_mode: z
+        .enum(['group', 'isolated'])
+        .default('group')
+        .describe(
+          'group=runs with chat history and memory, isolated=fresh session (include context in prompt)',
+        ),
+      target_group_jid: z
+        .string()
+        .optional()
+        .describe(
+          '(Main group only) JID of the group to schedule the task for. Defaults to the current group.',
+        ),
+    },
+    async (args) => {
+      // Validate schedule_value before writing IPC
+      if (args.schedule_type === 'cron') {
         try {
           CronExpressionParser.parse(args.schedule_value);
         } catch {
@@ -393,54 +237,305 @@ server.tool(
             content: [
               {
                 type: 'text' as const,
-                text: `Invalid cron: "${args.schedule_value}".`,
+                text: `Invalid cron: "${args.schedule_value}". Use format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      } else if (args.schedule_type === 'interval') {
+        const ms = parseInt(args.schedule_value, 10);
+        if (isNaN(ms) || ms <= 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Invalid interval: "${args.schedule_value}". Must be positive milliseconds (e.g., "300000" for 5 min).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      } else if (args.schedule_type === 'once') {
+        if (
+          /[Zz]$/.test(args.schedule_value) ||
+          /[+\-]\d{2}:\d{2}$/.test(args.schedule_value)
+        ) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}" — use format like "2026-02-01T15:30:00".`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        const date = new Date(args.schedule_value);
+        if (isNaN(date.getTime())) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Invalid timestamp: "${args.schedule_value}". Use local time format like "2026-02-01T15:30:00".`,
               },
             ],
             isError: true,
           };
         }
       }
-    }
-    if (args.schedule_type === 'interval' && args.schedule_value) {
-      const ms = parseInt(args.schedule_value, 10);
-      if (isNaN(ms) || ms <= 0) {
+
+      // Non-main groups can only schedule for themselves
+      const targetJid =
+        isMain && args.target_group_jid ? args.target_group_jid : chatJid;
+
+      const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      const data = {
+        type: 'schedule_task',
+        taskId,
+        prompt: args.prompt,
+        schedule_type: args.schedule_type,
+        schedule_value: args.schedule_value,
+        context_mode: args.context_mode || 'group',
+        targetJid,
+        createdBy: groupFolder,
+        timestamp: new Date().toISOString(),
+      };
+
+      writeIpcFile(TASKS_DIR, data);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'list_tasks',
+    "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks.",
+    {},
+    async () => {
+      const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+
+      try {
+        if (!fs.existsSync(tasksFile)) {
+          return {
+            content: [
+              { type: 'text' as const, text: 'No scheduled tasks found.' },
+            ],
+          };
+        }
+
+        const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
+
+        const tasks = isMain
+          ? allTasks
+          : allTasks.filter(
+              (t: { groupFolder: string }) => t.groupFolder === groupFolder,
+            );
+
+        if (tasks.length === 0) {
+          return {
+            content: [
+              { type: 'text' as const, text: 'No scheduled tasks found.' },
+            ],
+          };
+        }
+
+        const formatted = tasks
+          .map(
+            (t: {
+              id: string;
+              prompt: string;
+              schedule_type: string;
+              schedule_value: string;
+              status: string;
+              next_run: string;
+            }) =>
+              `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+          )
+          .join('\n');
+
+        return {
+          content: [
+            { type: 'text' as const, text: `Scheduled tasks:\n${formatted}` },
+          ],
+        };
+      } catch (err) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Invalid interval: "${args.schedule_value}".`,
+              text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
-          isError: true,
         };
       }
-    }
+    },
+  );
 
-    const data: Record<string, string | undefined> = {
-      type: 'update_task',
-      taskId: args.task_id,
-      groupFolder,
-      isMain: String(isMain),
-      timestamp: new Date().toISOString(),
-    };
-    if (args.prompt !== undefined) data.prompt = args.prompt;
-    if (args.schedule_type !== undefined)
-      data.schedule_type = args.schedule_type;
-    if (args.schedule_value !== undefined)
-      data.schedule_value = args.schedule_value;
+  server.tool(
+    'pause_task',
+    'Pause a scheduled task. It will not run until resumed.',
+    { task_id: z.string().describe('The task ID to pause') },
+    async (args) => {
+      const data = {
+        type: 'pause_task',
+        taskId: args.task_id,
+        groupFolder,
+        isMain,
+        timestamp: new Date().toISOString(),
+      };
 
-    writeIpcFile(TASKS_DIR, data);
+      writeIpcFile(TASKS_DIR, data);
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${args.task_id} update requested.`,
-        },
-      ],
-    };
-  },
-);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${args.task_id} pause requested.`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'resume_task',
+    'Resume a paused task.',
+    { task_id: z.string().describe('The task ID to resume') },
+    async (args) => {
+      const data = {
+        type: 'resume_task',
+        taskId: args.task_id,
+        groupFolder,
+        isMain,
+        timestamp: new Date().toISOString(),
+      };
+
+      writeIpcFile(TASKS_DIR, data);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${args.task_id} resume requested.`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'cancel_task',
+    'Cancel and delete a scheduled task.',
+    { task_id: z.string().describe('The task ID to cancel') },
+    async (args) => {
+      const data = {
+        type: 'cancel_task',
+        taskId: args.task_id,
+        groupFolder,
+        isMain,
+        timestamp: new Date().toISOString(),
+      };
+
+      writeIpcFile(TASKS_DIR, data);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${args.task_id} cancellation requested.`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'update_task',
+    'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
+    {
+      task_id: z.string().describe('The task ID to update'),
+      prompt: z.string().optional().describe('New prompt for the task'),
+      schedule_type: z
+        .enum(['cron', 'interval', 'once'])
+        .optional()
+        .describe('New schedule type'),
+      schedule_value: z
+        .string()
+        .optional()
+        .describe('New schedule value (see schedule_task for format)'),
+    },
+    async (args) => {
+      // Validate schedule_value if provided
+      if (
+        args.schedule_type === 'cron' ||
+        (!args.schedule_type && args.schedule_value)
+      ) {
+        if (args.schedule_value) {
+          try {
+            CronExpressionParser.parse(args.schedule_value);
+          } catch {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Invalid cron: "${args.schedule_value}".`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      }
+      if (args.schedule_type === 'interval' && args.schedule_value) {
+        const ms = parseInt(args.schedule_value, 10);
+        if (isNaN(ms) || ms <= 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Invalid interval: "${args.schedule_value}".`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      const data: Record<string, string | undefined> = {
+        type: 'update_task',
+        taskId: args.task_id,
+        groupFolder,
+        isMain: String(isMain),
+        timestamp: new Date().toISOString(),
+      };
+      if (args.prompt !== undefined) data.prompt = args.prompt;
+      if (args.schedule_type !== undefined)
+        data.schedule_type = args.schedule_type;
+      if (args.schedule_value !== undefined)
+        data.schedule_value = args.schedule_value;
+
+      writeIpcFile(TASKS_DIR, data);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${args.task_id} update requested.`,
+          },
+        ],
+      };
+    },
+  );
+}
 
 server.tool(
   'register_group',
@@ -492,6 +587,154 @@ Use available_groups.json to find the JID for a group. The folder name must be c
           text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
         },
       ],
+    };
+  },
+);
+
+// Telegram-specific action tools
+// These only work when the chat is a Telegram chat (jid starts with 'tg:')
+
+server.tool(
+  'telegram_delete_message',
+  'Delete a message in a Telegram chat. Only works for Telegram channels (jid starting with "tg:").',
+  {
+    message_id: z.number().describe('The message ID to delete'),
+    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+  },
+  async (args) => {
+    // Only allow in Telegram chats
+    if (!chatJid.startsWith('tg:')) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'telegram_action',
+      action: 'deleteMessage',
+      chatJid,
+      messageId: args.message_id,
+      targetChatId: args.chat_id,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Delete request sent for message ${args.message_id}` }],
+    };
+  },
+);
+
+server.tool(
+  'telegram_edit_message',
+  'Edit a message in a Telegram chat. Only works for Telegram channels (jid starting with "tg:"). You can only edit messages sent by the bot.',
+  {
+    message_id: z.number().describe('The message ID to edit'),
+    new_text: z.string().describe('The new text content'),
+    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+  },
+  async (args) => {
+    if (!chatJid.startsWith('tg:')) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'telegram_action',
+      action: 'editMessage',
+      chatJid,
+      messageId: args.message_id,
+      newText: args.new_text,
+      targetChatId: args.chat_id,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Edit request sent for message ${args.message_id}` }],
+    };
+  },
+);
+
+server.tool(
+  'telegram_create_topic',
+  'Create a new forum topic in a Telegram supergroup. Only works for Telegram channels (jid starting with "tg:").',
+  {
+    name: z.string().describe('The name of the new topic'),
+    icon_color: z.number().optional().describe('Optional: Icon color as a number (Telegram color format)'),
+    icon_emoji: z.string().optional().describe('Optional: Custom emoji ID for the topic icon'),
+    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+  },
+  async (args) => {
+    if (!chatJid.startsWith('tg:')) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'telegram_action',
+      action: 'createForumTopic',
+      chatJid,
+      topicName: args.name,
+      iconColor: args.icon_color,
+      iconEmoji: args.icon_emoji,
+      targetChatId: args.chat_id,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Create topic request sent: "${args.name}"` }],
+    };
+  },
+);
+
+// Announce tool - for subagents to report progress/status to parent in real-time
+server.tool(
+  'announce',
+  'Send a real-time progress update or status report to the parent agent while working. Use this to keep the parent informed of your progress before final completion. Examples: "Starting analysis of file A...", "50% complete - found 3 issues", "Waiting for API response..."',
+  {
+    message: z.string().describe('The progress update or status message to send to the parent agent'),
+    progress_percent: z.number().optional().describe('Optional: Progress percentage (0-100)'),
+    status: z.enum(['running', 'waiting', 'complete', 'error']).optional().describe('Current status'),
+  },
+  async (args) => {
+    const data = {
+      type: 'announce',
+      fromDepth: subagentDepth,
+      fromChatJid: chatJid,
+      message: args.message,
+      progress: args.progress_percent,
+      status: args.status || 'running',
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(ANNOUNCE_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Announced: ${args.message}` }],
+    };
+  },
+);
+
+server.tool(
+  'get_usage',
+  'Get Claude API usage statistics for the current session',
+  {},
+  async () => {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: 'Usage tracking available via /status command.',
+      }],
     };
   },
 );

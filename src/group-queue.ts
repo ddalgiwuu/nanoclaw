@@ -193,6 +193,26 @@ export class GroupQueue {
     }
   }
 
+  killProcess(groupJid: string): void {
+    const state = this.getGroup(groupJid);
+    if (!state.process) return;
+    try {
+      state.process.kill('SIGTERM');
+      // Force kill after 5s if SIGTERM is ignored
+      setTimeout(() => {
+        try {
+          if (state.process && !state.process.killed) {
+            state.process.kill('SIGKILL');
+            logger.info({ groupJid }, 'Force-killed agent process (SIGKILL)');
+          }
+        } catch { /* ignore */ }
+      }, 5000);
+      logger.info({ groupJid }, 'Killed agent process (idle timeout)');
+    } catch {
+      // ignore
+    }
+  }
+
   private async runForGroup(
     groupJid: string,
     reason: 'messages' | 'drain',

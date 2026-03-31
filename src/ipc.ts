@@ -3,12 +3,19 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
+import { createHash } from 'crypto';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
-import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { AvailableGroup } from './host-runner.js';
+import { createTask, deleteTask, getTaskById, updateTask, hasSentRecently, markSent, cleanOldSent, isPairedRoomJid, storeMessage } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+
+export interface TelegramActions {
+  deleteMessage: (chatId: string, messageId: number) => Promise<void>;
+  editMessage: (chatId: string, messageId: number, newText: string) => Promise<void>;
+  createForumTopic: (chatId: string, name: string, iconColor?: number, iconEmoji?: string) => Promise<void>;
+}
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -17,6 +24,7 @@ export interface IpcDeps {
     emoji: string,
     messageId?: string,
   ) => Promise<void>;
+  telegramActions?: TelegramActions;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -58,6 +66,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
     const registeredGroups = deps.registeredGroups();
 
+    // Clean old dedup records periodically
+    cleanOldSent();
+
     // Build folder→isMain lookup from registered groups
     const folderIsMain = new Map<string, boolean>();
     for (const group of Object.values(registeredGroups)) {
@@ -78,24 +89,53 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const raw = fs.readFileSync(filePath, 'utf-8');
+              // DELETE FILE FIRST — prevents re-read on next poll if send fails
+              try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+
+              const data = JSON.parse(raw);
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
+                // SQLite dedup: skip if sent recently
+                const dedupKey = createHash('sha256')
+                  .update(data.chatJid + data.text.slice(0, 200))
+                  .digest('hex');
+                if (hasSentRecently(dedupKey)) {
+                  logger.debug({ chatJid: data.chatJid }, 'IPC message skipped (DB dedup)');
                 } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
+                  // Authorization: verify this group can send to this chatJid
+                  // Allow: main group, same folder, or same project (e.g., discord_borkd-tasks → discord_borkd-review)
+                  const targetGroup = registeredGroups[data.chatJid];
+                  const sameProject = targetGroup && sourceGroup.replace(/-[^-]+$/, '') === targetGroup.folder.replace(/-[^-]+$/, '');
+                  if (
+                    isMain ||
+                    (targetGroup && targetGroup.folder === sourceGroup) ||
+                    sameProject
+                  ) {
+                    markSent(dedupKey, data.chatJid);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup, textPreview: data.text.slice(0, 80), dedupKey: dedupKey.slice(0, 12) },
+                      '>>> TRACE: IPC sending message to Telegram',
+                    );
+                    await deps.sendMessage(data.chatJid, data.text);
+                    // Store bot output in DB for paired room cross-agent visibility
+                    if (isPairedRoomJid(data.chatJid)) {
+                      storeMessage({
+                        id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        chat_jid: data.chatJid,
+                        sender: `nanoclaw-${data.agentType || 'claude-code'}`,
+                        sender_name: data.agentType === 'codex' ? 'Codex' : 'Claude',
+                        content: data.text,
+                        timestamp: new Date().toISOString(),
+                        is_from_me: false,
+                        is_bot_message: true,
+                      });
+                    }
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Unauthorized IPC message attempt blocked',
+                    );
+                  }
                 }
               } else if (
                 data.type === 'reaction' &&
@@ -135,19 +175,78 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC reaction attempt blocked',
                   );
                 }
+              } else if (
+                data.type === 'telegram_action' &&
+                data.chatJid &&
+                deps.telegramActions
+              ) {
+                // Handle Telegram-specific actions (delete, edit, createTopic)
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  try {
+                    const { telegramActions } = deps;
+                    const chatId = data.targetChatId || data.chatJid;
+
+                    switch (data.action) {
+                      case 'deleteMessage':
+                        await telegramActions.deleteMessage(chatId, data.messageId);
+                        logger.info(
+                          { chatJid: data.chatJid, messageId: data.messageId, sourceGroup },
+                          'IPC Telegram message deleted',
+                        );
+                        break;
+                      case 'editMessage':
+                        await telegramActions.editMessage(chatId, data.messageId, data.newText);
+                        logger.info(
+                          { chatJid: data.chatJid, messageId: data.messageId, sourceGroup },
+                          'IPC Telegram message edited',
+                        );
+                        break;
+                      case 'createForumTopic':
+                        await telegramActions.createForumTopic(
+                          chatId,
+                          data.topicName,
+                          data.iconColor,
+                          data.iconEmoji,
+                        );
+                        logger.info(
+                          { chatJid: data.chatJid, topicName: data.topicName, sourceGroup },
+                          'IPC Telegram forum topic created',
+                        );
+                        break;
+                      default:
+                        logger.warn(
+                          { action: data.action, chatJid: data.chatJid, sourceGroup },
+                          'Unknown Telegram action type',
+                        );
+                    }
+                  } catch (err) {
+                    logger.error(
+                      {
+                        chatJid: data.chatJid,
+                        action: data.action,
+                        sourceGroup,
+                        err,
+                      },
+                      'IPC Telegram action failed',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup, action: data.action },
+                    'Unauthorized IPC Telegram action attempt blocked',
+                  );
+                }
               }
-              fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
                 'Error processing IPC message',
               );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
+              // File already deleted above — no need to move to errors
             }
           }
         }

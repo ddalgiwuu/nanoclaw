@@ -55,7 +55,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 const EFFECTIVE_CWD = GROUP_DIR;
 const CODEX_MODEL = process.env.CODEX_MODEL || '';
-const CODEX_EFFORT = process.env.CODEX_EFFORT || '';
+const CODEX_EFFORT = process.env.CODEX_EFFORT || 'high';
 
 let closeRequested = false;
 

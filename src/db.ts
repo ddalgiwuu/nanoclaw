@@ -105,6 +105,26 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_reactions_reactor ON reactions(reactor_jid);
     CREATE INDEX IF NOT EXISTS idx_reactions_emoji ON reactions(emoji);
     CREATE INDEX IF NOT EXISTS idx_reactions_timestamp ON reactions(timestamp);
+
+    CREATE TABLE IF NOT EXISTS sent_messages (
+      dedup_key TEXT PRIMARY KEY,
+      chat_jid TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sent_messages_time ON sent_messages(sent_at);
+
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      session_id TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER DEFAULT 0,
+      cache_write INTEGER DEFAULT 0,
+      estimated_cost_usd REAL DEFAULT 0,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(recorded_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -128,6 +148,48 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add agent_type to registered_groups for paired room support
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`);
+  } catch { /* column already exists */ }
+
+  // Migrate registered_groups to composite PK (jid, agent_type) for paired rooms
+  // Check if migration is needed by seeing if jid is still the sole PK
+  try {
+    const pkInfo = database.prepare(`PRAGMA table_info(registered_groups)`).all() as Array<{ name: string; pk: number }>;
+    const pkColumns = pkInfo.filter(c => c.pk > 0).map(c => c.name);
+    if (pkColumns.length === 1 && pkColumns[0] === 'jid') {
+      database.exec(`
+        CREATE TABLE registered_groups_new (
+          jid TEXT NOT NULL,
+          name TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          trigger_pattern TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          container_config TEXT,
+          requires_trigger INTEGER DEFAULT 1,
+          is_main INTEGER DEFAULT 0,
+          agent_type TEXT NOT NULL DEFAULT 'claude-code',
+          PRIMARY KEY (jid, agent_type),
+          UNIQUE (folder, agent_type)
+        );
+        INSERT INTO registered_groups_new (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, agent_type)
+          SELECT jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, COALESCE(is_main, 0), COALESCE(agent_type, 'claude-code')
+          FROM registered_groups;
+        DROP TABLE registered_groups;
+        ALTER TABLE registered_groups_new RENAME TO registered_groups;
+      `);
+      logger.info('Migrated registered_groups to composite PK (jid, agent_type)');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'registered_groups PK migration skipped or failed');
+  }
+
+  // Add agent_type to sessions for per-agent session tracking
+  try {
+    database.exec(`ALTER TABLE sessions ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`);
+  } catch { /* column already exists */ }
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
@@ -156,6 +218,8 @@ export function initDatabase(): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
+  // Enable WAL mode for concurrent access (multiple NanoClaw processes)
+  db.pragma('journal_mode = WAL');
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -617,6 +681,35 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+/**
+ * Get the most recent consecutive error entries for a task (ordered newest first).
+ * Only returns rows where status='error', stopping at the first non-error run.
+ * Used by task-suspension to detect repeated failures.
+ */
+export function getRecentTaskErrors(
+  taskId: string,
+  limit: number,
+): Array<{ error: string; run_at: string }> {
+  const rows = db
+    .prepare(
+      `SELECT status, error, run_at FROM task_run_logs
+       WHERE task_id = ? ORDER BY run_at DESC LIMIT ?`,
+    )
+    .all(taskId, limit + 2) as Array<{
+    status: string;
+    error: string | null;
+    run_at: string;
+  }>;
+
+  const consecutive: Array<{ error: string; run_at: string }> = [];
+  for (const row of rows) {
+    if (row.status !== 'error' || !row.error) break;
+    consecutive.push({ error: row.error, run_at: row.run_at });
+    if (consecutive.length >= limit) break;
+  }
+  return consecutive;
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
@@ -641,16 +734,22 @@ export function getSession(groupFolder: string): string | undefined {
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
-  db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+export function setSession(groupFolder: string, sessionId: string, agentType?: string): void {
+  if (agentType) {
+    db.prepare(
+      'INSERT OR REPLACE INTO sessions (group_folder, session_id, agent_type) VALUES (?, ?, ?)',
+    ).run(groupFolder, sessionId, agentType);
+  } else {
+    db.prepare(
+      'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
+    ).run(groupFolder, sessionId);
+  }
 }
 
 export function getAllSessions(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT group_folder, session_id, agent_type FROM sessions')
+    .all() as Array<{ group_folder: string; session_id: string; agent_type: string | null }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
     result[row.group_folder] = row.session_id;
@@ -810,4 +909,147 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// ── Token usage tracking ────────────────────────────────────────
+
+export interface TokenUsageRow {
+  group_folder: string;
+  session_id: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  estimated_cost_usd: number;
+  recorded_at: string;
+}
+
+export function insertTokenUsage(row: TokenUsageRow): void {
+  db.prepare(
+    `INSERT INTO token_usage (group_folder, session_id, input_tokens, output_tokens, cache_read, cache_write, estimated_cost_usd, recorded_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.group_folder,
+    row.session_id,
+    row.input_tokens,
+    row.output_tokens,
+    row.cache_read,
+    row.cache_write,
+    row.estimated_cost_usd,
+    row.recorded_at,
+  );
+}
+
+export function queryTokenUsageSince(
+  since: string,
+  groupFolder?: string,
+): TokenUsageRow[] {
+  if (groupFolder) {
+    return db
+      .prepare(
+        'SELECT group_folder, session_id, input_tokens, output_tokens, cache_read, cache_write, estimated_cost_usd, recorded_at FROM token_usage WHERE recorded_at >= ? AND group_folder = ? ORDER BY recorded_at',
+      )
+      .all(since, groupFolder) as TokenUsageRow[];
+  }
+  return db
+    .prepare(
+      'SELECT group_folder, session_id, input_tokens, output_tokens, cache_read, cache_write, estimated_cost_usd, recorded_at FROM token_usage WHERE recorded_at >= ? ORDER BY recorded_at',
+    )
+    .all(since) as TokenUsageRow[];
+}
+
+export function aggregateTokenUsageSince(
+  since: string,
+  groupFolder?: string,
+): { input_tokens: number; output_tokens: number; cost_usd: number } {
+  const sql = groupFolder
+    ? `SELECT COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, COALESCE(SUM(estimated_cost_usd),0) as cost_usd FROM token_usage WHERE recorded_at >= ? AND group_folder = ?`
+    : `SELECT COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, COALESCE(SUM(estimated_cost_usd),0) as cost_usd FROM token_usage WHERE recorded_at >= ?`;
+
+  const args: unknown[] = [since];
+  if (groupFolder) args.push(groupFolder);
+
+  return db.prepare(sql).get(...args) as {
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+  };
+}
+
+// ── Sent message deduplication ──────────────────────────────────
+
+const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Check if a message with this dedup key was sent recently (within 5 minutes).
+ */
+export function hasSentRecently(dedupKey: string): boolean {
+  const cutoff = new Date(Date.now() - DEDUP_TTL_MS).toISOString();
+  const row = db
+    .prepare('SELECT 1 FROM sent_messages WHERE dedup_key = ? AND sent_at > ?')
+    .get(dedupKey, cutoff);
+  return !!row;
+}
+
+/**
+ * Record that a message was sent.
+ */
+export function markSent(dedupKey: string, chatJid: string): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO sent_messages (dedup_key, chat_jid, sent_at) VALUES (?, ?, ?)',
+  ).run(dedupKey, chatJid, new Date().toISOString());
+}
+
+/**
+ * Clean up old sent_messages records (older than 5 minutes).
+ */
+export function cleanOldSent(): void {
+  const cutoff = new Date(Date.now() - DEDUP_TTL_MS).toISOString();
+  db.prepare('DELETE FROM sent_messages WHERE sent_at < ?').run(cutoff);
+}
+
+// ── Paired room / dual-agent helpers ────────────────────────────
+
+export function isPairedRoomJid(jid: string): boolean {
+  if (!db) return false;
+  const rows = db
+    .prepare('SELECT DISTINCT agent_type FROM registered_groups WHERE jid = ?')
+    .all(jid) as Array<{ agent_type: string | null }>;
+  const types = new Set(rows.map(r => r.agent_type).filter(Boolean));
+  return types.has('claude-code') && types.has('codex');
+}
+
+export function getRegisteredAgentTypesForJid(jid: string): string[] {
+  if (!db) return [];
+  const rows = db
+    .prepare('SELECT DISTINCT agent_type FROM registered_groups WHERE jid = ?')
+    .all(jid) as Array<{ agent_type: string | null }>;
+  return rows.map(r => r.agent_type).filter((t): t is string => t === 'claude-code' || t === 'codex');
+}
+
+export function getLastHumanMessageTimestamp(chatJid: string): string | null {
+  if (!db) return null;
+  const row = db
+    .prepare(
+      `SELECT timestamp FROM messages
+       WHERE chat_jid = ? AND is_bot_message = 0 AND is_from_me = 0
+         AND content != '' AND content IS NOT NULL
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(chatJid) as { timestamp: string } | undefined;
+  return row?.timestamp ?? null;
+}
+
+export function getMessagesSincePaired(
+  chatJid: string,
+  sinceTimestamp: string,
+): NewMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_bot_message
+    FROM messages
+    WHERE chat_jid = ? AND timestamp > ?
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp
+  `;
+  return db.prepare(sql).all(chatJid, sinceTimestamp) as NewMessage[];
 }

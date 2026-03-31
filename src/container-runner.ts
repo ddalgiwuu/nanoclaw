@@ -170,6 +170,7 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'announce'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -237,6 +238,13 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass Moonshot API key directly for testing with Kimi models
+  if (process.env.MOONSHOT_API_KEY) {
+    args.push('-e', `MOONSHOT_API_KEY=${process.env.MOONSHOT_API_KEY}`);
+    args.push('-e', 'CLAUDE_CODE_USE_VERTEX=false');
+    args.push('-e', 'CLAUDE_CODE_USE_BEDROCK=false');
   }
 
   // Runtime-specific args for host gateway resolution

@@ -102,6 +102,14 @@ export interface Channel {
     emoji: string,
   ): Promise<void>;
   reactToLatestMessage?(chatJid: string, emoji: string): Promise<void>;
+  // Optional: Telegram-specific actions
+  deleteMessage?(chatId: string, messageId: number): Promise<void>;
+  editMessage?(chatId: string, messageId: number, newText: string): Promise<void>;
+  createForumTopic?(chatId: string, name: string, iconColor?: number, iconEmoji?: string): Promise<void>;
+  // Optional: send a message and return its ID for later editing (string-based, for Discord etc.)
+  sendAndTrack?(jid: string, text: string): Promise<string | null>;
+  // Optional: edit a message by string ID (for Discord etc.)
+  editMessageById?(jid: string, messageId: string, newText: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
@@ -117,3 +125,5 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+export type AgentType = 'claude-code' | 'codex';

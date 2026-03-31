@@ -12,6 +12,7 @@ export function extractSessionCommand(
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
   if (text === '/compact') return '/compact';
+  if (/^\/prune(?:\s+(soft|hard))?$/i.test(text)) return text;
   return null;
 }
 

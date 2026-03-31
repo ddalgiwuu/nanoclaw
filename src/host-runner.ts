@@ -17,7 +17,9 @@ import {
   removeTask,
 } from './task-status-tracker.js';
 import { RegisteredGroup } from './types.js';
-import { isRateLimitError, getCooldownMs } from './provider-fallback.js';
+import { isRateLimitError, getCooldownMs, getActiveProvider, getFallbackEnvOverrides } from './provider-fallback.js';
+import { recordAction, detectLoop, resetLoop } from './loop-detector.js';
+import { getCurrentToken, refreshCodexToken } from './token-rotation.js';
 
 const MAX_RATE_LIMIT_RETRIES = 3;
 
@@ -40,6 +42,7 @@ export interface AgentInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   agentType?: 'claude-code' | 'codex';
+  thinkingEnv?: Record<string, string>;
 }
 
 export interface AgentOutput {
@@ -134,6 +137,7 @@ function buildAgentEnv(
   // Load all secrets from .env
   const secrets = readEnvFile([
     'ANTHROPIC_API_KEY',
+    'ANTHROPIC_BASE_URL',
     'CLAUDE_CODE_OAUTH_TOKEN',
     'OPENAI_API_KEY',
     'BRAVE_API_KEY',
@@ -160,13 +164,25 @@ function buildAgentEnv(
     ...secrets,
   };
 
+  // Token rotation — use active token if available.
+  // If no token, Claude Code SDK will fall back to macOS Keychain auth.
+  const activeToken = getCurrentToken();
+  if (activeToken) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = activeToken;
+  }
+
+  // Provider fallback — check active provider
+  if (getActiveProvider() !== 'claude') {
+    const overrides = getFallbackEnvOverrides();
+    Object.assign(env, overrides);
+  }
+
   return env;
 }
 
 /**
  * Run an agent directly on the host as a child process.
- * This replaces runContainerAgent — no Docker, no containers.
- * Includes rate-limit detection with exponential backoff retry.
+ * No retry — agent sends responses via send_message MCP tool.
  */
 export async function runHostAgent(
   group: RegisteredGroup,
@@ -195,67 +211,14 @@ export async function runHostAgent(
     };
   }
 
-  for (let attempt = 1; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
-    const result = await spawnAgentOnce(
-      group,
-      input,
-      onProcess,
-      onOutput,
-      agentRunnerPath,
-      groupDir,
-    );
-
-    // If success or non-rate-limit error, return immediately
-    if (
-      result.status === 'success' ||
-      !result.error ||
-      !isRateLimitError(result.error)
-    ) {
-      return result;
-    }
-
-    // Rate limit detected
-    const cooldownMs = getCooldownMs(attempt);
-    const cooldownSec = Math.ceil(cooldownMs / 1000);
-
-    logger.warn(
-      {
-        group: group.name,
-        attempt,
-        maxRetries: MAX_RATE_LIMIT_RETRIES,
-        cooldownSec,
-        error: result.error,
-      },
-      'Rate limit detected, will retry after cooldown',
-    );
-
-    // Notify the user via onOutput callback
-    if (onOutput) {
-      await onOutput({
-        status: 'success',
-        result: `\u23f3 Rate limit \ubc1c\uc0dd, ${cooldownSec}\ucd08 \ud6c4 \uc7ac\uc2dc\ub3c4... (${attempt}/${MAX_RATE_LIMIT_RETRIES})`,
-      });
-    }
-
-    // If this was the last attempt, return the error
-    if (attempt === MAX_RATE_LIMIT_RETRIES) {
-      logger.error(
-        { group: group.name, attempts: attempt, error: result.error },
-        'Rate limit retries exhausted',
-      );
-      return {
-        status: 'error',
-        result: null,
-        error: `Rate limit after ${attempt} retries: ${result.error}`,
-      };
-    }
-
-    // Wait for cooldown before retrying
-    await new Promise((resolve) => setTimeout(resolve, cooldownMs));
-  }
-
-  // Should not reach here, but satisfy TypeScript
-  return { status: 'error', result: null, error: 'Unexpected fallback exit' };
+  return spawnAgentOnce(
+    group,
+    input,
+    onProcess,
+    onOutput,
+    agentRunnerPath,
+    groupDir,
+  );
 }
 
 /**
@@ -274,10 +237,19 @@ function spawnAgentOnce(
 
   const env = buildAgentEnv(group, input.isMain);
   env.NANOCLAW_CHAT_JID = input.chatJid;
+  env.NANOCLAW_AGENT_TYPE = input.agentType || 'claude-code';
+
+  // Apply thinking level environment variables
+  if (input.thinkingEnv) {
+    Object.assign(env, input.thinkingEnv);
+  }
 
   // Codex-specific environment setup
   const isCodex = input.agentType === 'codex';
   if (isCodex) {
+    // Refresh codex token before spawning (handles expiry during long-running NanoClaw)
+    refreshCodexToken();
+
     const codexSecrets = readEnvFile([
       'OPENAI_API_KEY',
       'CODEX_MODEL',
@@ -291,10 +263,15 @@ function spawnAgentOnce(
     fs.mkdirSync(codexHome, { recursive: true });
     env.CODEX_HOME = codexHome;
 
-    // Copy codex auth/config from ~/.codex/ to session dir
+    // Copy only essential codex auth/config files (skip .git, vendor_imports, etc.)
     const userCodexDir = path.join(process.env.HOME || '', '.codex');
     if (fs.existsSync(userCodexDir)) {
-      fs.cpSync(userCodexDir, codexHome, { recursive: true });
+      for (const file of ['auth.json', 'config.toml']) {
+        const src = path.join(userCodexDir, file);
+        if (fs.existsSync(src)) {
+          fs.copyFileSync(src, path.join(codexHome, file));
+        }
+      }
     }
   }
 
@@ -400,6 +377,18 @@ function spawnAgentOnce(
       for (const line of lines) {
         if (line) logger.debug({ agent: group.folder }, line);
       }
+
+      // Feed to loop detector
+      const stderrLine = chunk.toString().trim();
+      if (stderrLine.includes('Tool:') || stderrLine.includes('tool_use')) {
+        recordAction(group.folder, stderrLine.slice(0, 200));
+        const loopCheck = detectLoop(group.folder);
+        if (loopCheck.looping && loopCheck.severity === 'block') {
+          logger.error({ group: group.name, pattern: loopCheck.pattern }, 'Loop detected, killing agent');
+          agentProc.kill('SIGTERM');
+        }
+      }
+
       if (stderrTruncated) return;
       const remaining = MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
@@ -435,6 +424,7 @@ function spawnAgentOnce(
 
     agentProc.on('close', (code) => {
       clearTimeout(timeout);
+      resetLoop(group.folder);
       const duration = Date.now() - startTime;
 
       updateTaskStatus(processId, code === 0 ? 'completed' : 'error');
