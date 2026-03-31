@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
+  MONITORING_CHANNEL_JID,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -68,19 +69,45 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { compactSession } from './context-compaction.js';
 import { parsePruneCommand, pruneSession } from './context-pruning.js';
 import { logger } from './logger.js';
-import { parseThinkingDirective, getThinkingLabel, buildThinkingEnv } from './thinking-levels.js';
-import { getSessionThinkingLevel, setSessionThinkingLevel } from './session-manager.js';
-import { recordAgentResult, shouldResetSession, resetErrorCount } from './session-recovery.js';
-import { loadRestartState, clearRestartState, formatRestartAnnouncement, captureRestartState, saveRestartState } from './restart-context.js';
+import {
+  parseThinkingDirective,
+  getThinkingLabel,
+  buildThinkingEnv,
+} from './thinking-levels.js';
+import {
+  getSessionThinkingLevel,
+  setSessionThinkingLevel,
+} from './session-manager.js';
+import {
+  recordAgentResult,
+  shouldResetSession,
+  resetErrorCount,
+} from './session-recovery.js';
+import {
+  loadRestartState,
+  clearRestartState,
+  formatRestartAnnouncement,
+  captureRestartState,
+  saveRestartState,
+} from './restart-context.js';
 import { buildDashboardState, formatDashboardMessage } from './dashboard.js';
 import { initTokenRotation } from './token-rotation.js';
-import { registerPlugin, runAssemble, runIngest, runAfterTurn } from './context-engine.js';
+import {
+  registerPlugin,
+  runAssemble,
+  runIngest,
+  runAfterTurn,
+} from './context-engine.js';
 import { createMemoryPlugin } from './memory-system.js';
-import { createStreamedOutputState, evaluateStreamedOutput } from './streamed-output-evaluator.js';
+import {
+  createStreamedOutputState,
+  evaluateStreamedOutput,
+} from './streamed-output-evaluator.js';
 import { classifyAgentError } from './agent-error-detection.js';
 import { evaluateTaskSuspension } from './task-suspension.js';
 import { getFormattedUsage } from './usage-dashboard.js';
 import { filterLoopingPairedBotMessages } from './collaboration-timeout.js';
+import { startDashboard, type RoomStatus } from './unified-dashboard.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -96,7 +123,6 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -208,7 +234,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       group: group.name,
       sinceTimestamp,
       messageCount: missedMessages.length,
-      messageIds: missedMessages.map(m => m.id),
+      messageIds: missedMessages.map((m) => m.id),
       firstContent: missedMessages[0]?.content?.slice(0, 50),
     },
     '>>> TRACE: processGroupMessages called',
@@ -267,17 +293,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   if (isPaired) {
-    logger.info({ group: group.name, chatJid }, 'Entering paired room dispatch');
+    logger.info(
+      { group: group.name, chatJid },
+      'Entering paired room dispatch',
+    );
     // Paired room: fetch messages INCLUDING bot messages
-    const allMessages = getMessagesSincePaired(chatJid, lastAgentTimestamp[chatJid] || '');
+    const allMessages = getMessagesSincePaired(
+      chatJid,
+      lastAgentTimestamp[chatJid] || '',
+    );
 
     if (allMessages.length === 0) return true;
 
     // Check bot-only collaboration timeout
     if (shouldSkipBotOnlyCollaboration(chatJid, allMessages)) {
-      logger.info({ group: group.name }, 'Skipping bot-only collaboration (timeout)');
+      logger.info(
+        { group: group.name },
+        'Skipping bot-only collaboration (timeout)',
+      );
       // Still advance cursor
-      lastAgentTimestamp[chatJid] = allMessages[allMessages.length - 1].timestamp;
+      lastAgentTimestamp[chatJid] =
+        allMessages[allMessages.length - 1].timestamp;
       saveState();
       return true;
     }
@@ -292,18 +328,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
     // In dedicated processes (NANOCLAW_AGENT_TYPE set), only run OUR agent type.
     // This prevents double execution when Claude and Codex run as separate processes.
-    const processAgentType = process.env.NANOCLAW_AGENT_TYPE as string | undefined;
+    const processAgentType = process.env.NANOCLAW_AGENT_TYPE as
+      | string
+      | undefined;
     const agentTypes = processAgentType
-      ? allAgentTypes.filter(t => t === processAgentType)
+      ? allAgentTypes.filter((t) => t === processAgentType)
       : allAgentTypes;
 
     if (agentTypes.length === 0) {
-      logger.debug({ group: group.name, processAgentType }, 'No matching agent type for this process in paired room');
+      logger.debug(
+        { group: group.name, processAgentType },
+        'No matching agent type for this process in paired room',
+      );
       return true;
     }
 
     logger.info(
-      { group: group.name, agentTypes, processAgentType, messageCount: allMessages.length },
+      {
+        group: group.name,
+        agentTypes,
+        processAgentType,
+        messageCount: allMessages.length,
+      },
       'Paired room dispatch',
     );
 
@@ -322,26 +368,34 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
       // Memory assembly
       await runIngest(
-        filtered.filter(m => !m.is_bot_message).map((m) => ({
-          content: m.content,
-          sender_name: m.sender_name || m.sender || 'unknown',
-          timestamp: m.timestamp,
-        })),
+        filtered
+          .filter((m) => !m.is_bot_message)
+          .map((m) => ({
+            content: m.content,
+            sender_name: m.sender_name || m.sender || 'unknown',
+            timestamp: m.timestamp,
+          })),
         group.folder,
       );
       const memoryParts = await runAssemble(group.folder);
-      const memoryContext = memoryParts.length > 0
-        ? `<memory>\n${memoryParts.join('\n\n---\n\n')}\n</memory>\n\n`
-        : '';
+      const memoryContext =
+        memoryParts.length > 0
+          ? `<memory>\n${memoryParts.join('\n\n---\n\n')}\n</memory>\n\n`
+          : '';
 
       const pairedContext = pairedPrompt
         ? `<paired-room-rules>\n${pairedPrompt}\n</paired-room-rules>\n\n`
         : '';
 
-      const prompt = pairedContext + memoryContext + formatMessages(filtered, TIMEZONE);
+      const prompt =
+        pairedContext + memoryContext + formatMessages(filtered, TIMEZONE);
 
       logger.info(
-        { group: group.name, agentType: currentAgentType, promptLength: prompt.length },
+        {
+          group: group.name,
+          agentType: currentAgentType,
+          promptLength: prompt.length,
+        },
         'Running paired agent',
       );
 
@@ -357,10 +411,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         chatJid,
         async (result) => {
           if (result.result) {
-            const raw = typeof result.result === 'string'
-              ? result.result
-              : JSON.stringify(result.result);
-            const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+            const raw =
+              typeof result.result === 'string'
+                ? result.result
+                : JSON.stringify(result.result);
+            const text = raw
+              .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+              .trim();
             if (text) lastResultText = text;
           }
           if (result.status === 'success') queue.notifyIdle(chatJid);
@@ -401,15 +458,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Assemble memory context and prepend to prompt
   const memoryParts = await runAssemble(group.folder);
   logger.info(
-    { group: group.name, folder: group.folder, memoryPartCount: memoryParts.length, memoryLength: memoryParts.join('').length },
+    {
+      group: group.name,
+      folder: group.folder,
+      memoryPartCount: memoryParts.length,
+      memoryLength: memoryParts.join('').length,
+    },
     'Memory assembly result',
   );
-  const memoryContext = memoryParts.length > 0
-    ? `<memory>\n${memoryParts.join('\n\n---\n\n')}\n</memory>\n\n`
-    : '';
+  const memoryContext =
+    memoryParts.length > 0
+      ? `<memory>\n${memoryParts.join('\n\n---\n\n')}\n</memory>\n\n`
+      : '';
   const prompt = memoryContext + formatMessages(missedMessages, TIMEZONE);
   logger.info(
-    { group: group.name, promptLength: prompt.length, hasMemory: memoryParts.length > 0 },
+    {
+      group: group.name,
+      promptLength: prompt.length,
+      hasMemory: memoryParts.length > 0,
+    },
     'Prompt built with memory context',
   );
 
@@ -417,7 +484,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // 1. NANOCLAW_AGENT_TYPE env var (dedicated process, e.g., Discord Codex)
   // 2. /plan prefix in message → codex
   // 3. Default: claude-code
-  const envAgentType = process.env.NANOCLAW_AGENT_TYPE as 'claude-code' | 'codex' | undefined;
+  const envAgentType = process.env.NANOCLAW_AGENT_TYPE as
+    | 'claude-code'
+    | 'codex'
+    | undefined;
   let agentType: 'claude-code' | 'codex' | undefined = envAgentType;
   const lastMsg = missedMessages[missedMessages.length - 1];
   if (!agentType && lastMsg && /^\/plan\b/i.test(lastMsg.content.trim())) {
@@ -436,7 +506,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         return active;
       },
     });
-    const fullDashboard = dashboard + '\n\n' + formatDashboardMessage(dashState);
+    const fullDashboard =
+      dashboard + '\n\n' + formatDashboardMessage(dashState);
     await channel.sendMessage(chatJid, fullDashboard);
     return true;
   }
@@ -447,7 +518,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const usage = await getFormattedUsage();
       await channel.sendMessage(chatJid, usage || '사용량 데이터 없음');
     } catch (err) {
-      await channel.sendMessage(chatJid, '사용량 조회 실패. 다시 시도해주세요.');
+      await channel.sendMessage(
+        chatJid,
+        '사용량 조회 실패. 다시 시도해주세요.',
+      );
       logger.error({ err }, 'Usage dashboard error');
     }
     return true;
@@ -463,7 +537,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       sessionId: sessions[group.folder] || '',
       instructions,
       sendMessage: (text) => channel.sendMessage(chatJid, text),
-      runAgent: (prompt, onOutput) => runAgent(group, prompt, chatJid, onOutput),
+      runAgent: (prompt, onOutput) =>
+        runAgent(group, prompt, chatJid, onOutput),
     });
     return true;
   }
@@ -477,7 +552,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         sessionId: sessions[group.folder] || '',
         mode: parsed.mode,
         sendMessage: (text) => channel.sendMessage(chatJid, text),
-        runAgent: (prompt, onOutput) => runAgent(group, prompt, chatJid, onOutput),
+        runAgent: (prompt, onOutput) =>
+          runAgent(group, prompt, chatJid, onOutput),
       });
     }
     return true;
@@ -514,10 +590,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.info(
-        { group: group.name },
-        'Idle timeout, killing agent process',
-      );
+      logger.info({ group: group.name }, 'Idle timeout, killing agent process');
       queue.closeStdin(chatJid);
       // Also kill the process directly — closeStdin writes _close sentinel
       // but agent may not check it promptly
@@ -562,7 +635,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         setTimeout(() => {
           queue.killProcess(chatJid);
           setTimeout(() => {
-            try { const s = (queue as any).getGroup(chatJid); if (s?.process && !s.process.killed) s.process.kill('SIGKILL'); } catch {}
+            try {
+              const s = (queue as any).getGroup(chatJid);
+              if (s?.process && !s.process.killed) s.process.kill('SIGKILL');
+            } catch {}
           }, 5000);
         }, 10000);
       }
@@ -702,11 +778,17 @@ async function runAgent(
     recordAgentResult(group.folder, output.status === 'success');
 
     // Check if session needs reset
-    if (output.status === 'error' && shouldResetSession(group.folder, output.error)) {
+    if (
+      output.status === 'error' &&
+      shouldResetSession(group.folder, output.error)
+    ) {
       sessions[sessionKey] = '';
       setSession(sessionKey, '', agentType);
       resetErrorCount(group.folder);
-      logger.warn({ group: group.name }, 'Session auto-reset due to repeated errors');
+      logger.warn(
+        { group: group.name },
+        'Session auto-reset due to repeated errors',
+      );
     }
 
     if (output.status === 'error') {
@@ -736,7 +818,9 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       // Only poll JIDs owned by connected channels (prevents telegram process from querying discord JIDs)
-      const jids = Object.keys(registeredGroups).filter(jid => findChannel(channels, jid));
+      const jids = Object.keys(registeredGroups).filter((jid) =>
+        findChannel(channels, jid),
+      );
       const { messages, newTimestamp } = getNewMessages(
         jids,
         lastTimestamp,
@@ -800,7 +884,8 @@ async function startMessageLoop(): Promise<void> {
           // --- End session command interception ---
 
           const isPairedLoop = isPairedRoomJid(chatJid);
-          const needsTrigger = !isPairedLoop && !isMainGroup && group.requiresTrigger !== false;
+          const needsTrigger =
+            !isPairedLoop && !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main, non-paired groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -1198,6 +1283,55 @@ async function main(): Promise<void> {
       if (channel) await channel.sendMessage(jid, text);
     },
   });
+
+  // Start monitoring dashboard (claude-code process only, avoid codex duplicate)
+  if (
+    MONITORING_CHANNEL_JID &&
+    (process.env.NANOCLAW_AGENT_TYPE === 'claude-code' ||
+      !process.env.NANOCLAW_AGENT_TYPE)
+  ) {
+    const monChannel = findChannel(channels, MONITORING_CHANNEL_JID);
+    if (monChannel?.sendAndTrack && monChannel?.editMessageById) {
+      let dashMsgId: string | null = null;
+
+      const getRoomStatuses = (): RoomStatus[] =>
+        Object.entries(registeredGroups).map(([jid, group]) => ({
+          jid,
+          name: group.name,
+          status: queue.isActive(jid)
+            ? ('처리 중' as const)
+            : ('비활성' as const),
+          elapsedMs: null,
+          pendingTasks: 0,
+        }));
+
+      startDashboard({
+        getRoomStatuses,
+        sendOrEdit: async (content) => {
+          if (dashMsgId) {
+            try {
+              await monChannel.editMessageById!(
+                MONITORING_CHANNEL_JID,
+                dashMsgId,
+                content,
+              );
+              return;
+            } catch {
+              dashMsgId = null;
+            }
+          }
+          dashMsgId = await monChannel.sendAndTrack!(
+            MONITORING_CHANNEL_JID,
+            content,
+          );
+        },
+      }).catch((err) =>
+        logger.warn({ err }, 'Monitoring dashboard start failed'),
+      );
+    } else {
+      logger.warn('Monitoring channel not found, dashboard disabled');
+    }
+  }
 
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

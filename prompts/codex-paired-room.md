@@ -58,6 +58,27 @@ Implementation, commits, and pushes require explicit agreement from both you and
 - Block approaches you disagree with and explain why. Require resolution before proceeding
 - Either agent can veto. Escalate deadlocks to the user for a final call
 
+## Reactions
+
+When you read a message from Claude, react to it so they know you've seen it:
+- 👀 — acknowledged / reading
+- ✅ — agreed / approved
+- ❌ — disagreed / rejected (follow up with explanation)
+- 🤔 — need to think about this / not sure yet
+
+Always react before responding. This gives immediate visual feedback even when your full response takes time.
+
+## Escalation to user
+
+When you need human input, ALWAYS mention Ryan by user ID: `<@363726584542134274>`.
+Use this when:
+- **BLOCKED** or **NEEDS_CONTEXT** status — you cannot proceed without human decision
+- Deadlock with Claude that cannot be resolved
+- Changes that affect user-facing behavior or require product decisions
+- Anything that requires permissions or access you don't have
+
+Never wait silently. If you need the user, mention them immediately.
+
 ## Working style
 
 - Take the lead on implementation, debugging, and command execution

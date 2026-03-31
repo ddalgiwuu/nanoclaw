@@ -9,6 +9,7 @@ import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import { getCurrentToken } from './token-rotation.js';
 
 // ── Types ──
 
@@ -116,11 +117,17 @@ async function fetchUsageForToken(
     });
 
     if (res.status === 401) {
-      logger.warn({ cacheKey }, 'Claude usage API: token expired or invalid (401)');
+      logger.warn(
+        { cacheKey },
+        'Claude usage API: token expired or invalid (401)',
+      );
       return null;
     }
     if (res.status === 429) {
-      logger.warn({ cacheKey }, 'Claude usage API: rate limited (429), returning cached');
+      logger.warn(
+        { cacheKey },
+        'Claude usage API: rate limited (429), returning cached',
+      );
       if (cached) {
         cached.lastAttemptAt = Date.now();
         saveUsageDiskCache();
@@ -128,7 +135,10 @@ async function fetchUsageForToken(
       return cached?.usage ?? null;
     }
     if (!res.ok) {
-      logger.warn({ status: res.status, cacheKey }, `Claude usage API: unexpected status ${res.status}`);
+      logger.warn(
+        { status: res.status, cacheKey },
+        `Claude usage API: unexpected status ${res.status}`,
+      );
       if (cached) {
         cached.lastAttemptAt = Date.now();
         saveUsageDiskCache();
@@ -145,11 +155,19 @@ async function fetchUsageForToken(
     };
 
     const now = Date.now();
-    usageDiskCache[cacheKey] = { usage: result, fetchedAt: now, lastAttemptAt: now };
+    usageDiskCache[cacheKey] = {
+      usage: result,
+      fetchedAt: now,
+      lastAttemptAt: now,
+    };
     saveUsageDiskCache();
 
     logger.debug(
-      { cacheKey, h5: result.five_hour?.utilization, d7: result.seven_day?.utilization },
+      {
+        cacheKey,
+        h5: result.five_hour?.utilization,
+        d7: result.seven_day?.utilization,
+      },
       'Claude usage API: fetched successfully',
     );
 
@@ -176,7 +194,8 @@ async function fetchUsageForToken(
  * Fetch Claude usage data using the CLAUDE_CODE_OAUTH_TOKEN env var.
  */
 export async function fetchClaudeUsage(): Promise<ClaudeUsageData | null> {
-  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const token =
+    process.env.CLAUDE_CODE_OAUTH_TOKEN || getCurrentToken();
   if (!token) {
     logger.debug('No Claude OAuth token available for usage check');
     return null;

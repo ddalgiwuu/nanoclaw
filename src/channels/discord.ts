@@ -30,11 +30,19 @@ const envFile = readEnvFile([
 function getDiscordToken(): string | undefined {
   // Agent-specific token takes priority
   if (agentType === 'codex') {
-    return process.env.DISCORD_CODEX_TOKEN || envFile.DISCORD_CODEX_TOKEN
-      || process.env.DISCORD_BOT_TOKEN || envFile.DISCORD_BOT_TOKEN;
+    return (
+      process.env.DISCORD_CODEX_TOKEN ||
+      envFile.DISCORD_CODEX_TOKEN ||
+      process.env.DISCORD_BOT_TOKEN ||
+      envFile.DISCORD_BOT_TOKEN
+    );
   }
-  return process.env.DISCORD_CLAUDE_TOKEN || envFile.DISCORD_CLAUDE_TOKEN
-    || process.env.DISCORD_BOT_TOKEN || envFile.DISCORD_BOT_TOKEN;
+  return (
+    process.env.DISCORD_CLAUDE_TOKEN ||
+    envFile.DISCORD_CLAUDE_TOKEN ||
+    process.env.DISCORD_BOT_TOKEN ||
+    envFile.DISCORD_BOT_TOKEN
+  );
 }
 
 const DISCORD_TOKEN = getDiscordToken();
@@ -51,7 +59,9 @@ registerChannel('discord', (opts: ChannelOpts): Channel | null => {
   }
   if (!channelFilter) {
     // No filter set — skip Discord to avoid conflict with dedicated Discord processes
-    logger.info('Discord: skipping (no NANOCLAW_CHANNEL set, use dedicated process)');
+    logger.info(
+      'Discord: skipping (no NANOCLAW_CHANNEL set, use dedicated process)',
+    );
     return null;
   }
   return new DiscordChannel(opts);
@@ -73,6 +83,7 @@ class DiscordChannel implements Channel {
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions,
       ],
     });
   }
@@ -94,7 +105,9 @@ class DiscordChannel implements Channel {
         }
       }
 
-      const effectiveJid = this.opts.registeredGroups()[jid] ? jid : `discord:${msg.channelId}`;
+      const effectiveJid = this.opts.registeredGroups()[jid]
+        ? jid
+        : `discord:${msg.channelId}`;
 
       // Translate @bot mentions to trigger pattern
       let content = msg.content;
@@ -107,14 +120,18 @@ class DiscordChannel implements Channel {
       }
 
       const timestamp = msg.createdAt.toISOString();
-      const senderName = msg.member?.displayName || msg.author.displayName || msg.author.username;
+      const senderName =
+        msg.member?.displayName ||
+        msg.author.displayName ||
+        msg.author.username;
       const sender = msg.author.id;
       const msgId = msg.id;
 
       const channelName =
         msg.channel.type === ChannelType.GuildText
           ? (msg.channel as TextChannel).name
-          : msg.channel.type === ChannelType.PublicThread || msg.channel.type === ChannelType.PrivateThread
+          : msg.channel.type === ChannelType.PublicThread ||
+              msg.channel.type === ChannelType.PrivateThread
             ? msg.channel.name
             : 'unknown';
 
@@ -139,7 +156,8 @@ class DiscordChannel implements Channel {
         content,
         timestamp,
         is_from_me: false,
-        is_bot_message: msg.author.bot && msg.author.id !== this.client.user?.id,
+        is_bot_message:
+          msg.author.bot && msg.author.id !== this.client.user?.id,
       });
 
       logger.info(
@@ -206,6 +224,41 @@ class DiscordChannel implements Channel {
       );
       throw err;
     }
+  }
+
+  async sendReaction(
+    jid: string,
+    messageKey: { id: string; remoteJid: string; fromMe?: boolean },
+    emoji: string,
+  ): Promise<void> {
+    const channelId = this.jidToChannelId(jid);
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel?.isTextBased()) {
+        const msg = await (channel as TextChannel).messages.fetch(
+          messageKey.id,
+        );
+        await msg.react(emoji);
+      }
+    } catch (err) {
+      logger.error(
+        { jid, messageId: messageKey.id, emoji, err },
+        'Discord sendReaction failed',
+      );
+    }
+  }
+
+  async reactToLatestMessage(jid: string, emoji: string): Promise<void> {
+    const lastMsgId = this.lastMessageIds.get(jid);
+    if (!lastMsgId) {
+      logger.debug({ jid }, 'No last message ID to react to');
+      return;
+    }
+    await this.sendReaction(
+      jid,
+      { id: lastMsgId, remoteJid: jid },
+      emoji,
+    );
   }
 
   isConnected(): boolean {

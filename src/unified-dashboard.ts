@@ -139,10 +139,9 @@ function buildStatusSection(rooms: RoomStatus[]): string {
 
 // ── Usage Section ────────────────────────────────────────────────
 
-function buildClaudeUsageRows(
-  usage: ClaudeUsageData,
-): UsageRow[] {
-  const normalize = (u: number) => (u > 1 ? Math.round(u) : Math.round(u * 100));
+function buildClaudeUsageRows(usage: ClaudeUsageData): UsageRow[] {
+  const normalize = (u: number) =>
+    u > 1 ? Math.round(u) : Math.round(u * 100);
 
   const rows: UsageRow[] = [];
 
@@ -150,9 +149,13 @@ function buildClaudeUsageRows(
     rows.push({
       name: 'Claude',
       h5pct: usage.five_hour ? normalize(usage.five_hour.utilization) : -1,
-      h5reset: usage.five_hour ? formatResetRemaining(usage.five_hour.resets_at) : '',
+      h5reset: usage.five_hour
+        ? formatResetRemaining(usage.five_hour.resets_at)
+        : '',
       d7pct: usage.seven_day ? normalize(usage.seven_day.utilization) : -1,
-      d7reset: usage.seven_day ? formatResetRemaining(usage.seven_day.resets_at) : '',
+      d7reset: usage.seven_day
+        ? formatResetRemaining(usage.seven_day.resets_at)
+        : '',
     });
   }
 
@@ -197,34 +200,38 @@ async function buildUsageSection(): Promise<string> {
     const visualWidth = (s: string) =>
       [...s].reduce((w, c) => w + ((c.codePointAt(0) ?? 0) > 0x7f ? 2 : 1), 0);
     const maxNameWidth =
-      Math.max(8, ...rows.map((r) => visualWidth(r.name))) + 1;
+      Math.max(10, ...rows.map((r) => visualWidth(r.name))) + 3;
     const padName = (s: string) =>
       s + ' '.repeat(Math.max(0, maxNameWidth - visualWidth(s)));
     const compactReset = (s: string) =>
       s ? s.replace(/\s+/g, '').replace(/m$/, '') : '';
+    const colGap = '   ';
 
     lines.push('```');
-    lines.push(`${' '.repeat(maxNameWidth)}5h        7d`);
+    lines.push(`${' '.repeat(maxNameWidth)}5h${' '.repeat(9)}${colGap}7d`);
+    lines.push('');
     for (const row of rows) {
       const h5 =
         row.h5pct >= 0
-          ? `${bar(row.h5pct)}${String(row.h5pct).padStart(3)}%`
-          : ' \u2014   ';
+          ? `${bar(row.h5pct)} ${String(row.h5pct).padStart(3)}%`
+          : '  \u2014     ';
       const d7 =
         row.d7pct >= 0
-          ? `${bar(row.d7pct)}${String(row.d7pct).padStart(3)}%`
-          : ' \u2014   ';
-      lines.push(`${padName(row.name)}${h5} ${d7}`);
+          ? `${bar(row.d7pct)} ${String(row.d7pct).padStart(3)}%`
+          : '  \u2014     ';
+      lines.push(`${padName(row.name)}${h5}${colGap}${d7}`);
       const r5 = compactReset(row.h5reset);
       const r7 = compactReset(row.d7reset);
       if (r5 || r7) {
-        const d7ColStart = maxNameWidth + 10;
+        const h5ColWidth = 11; // bar(5) + space + 3digit + %
+        const d7ColStart = maxNameWidth + h5ColWidth + colGap.length;
         let resetLine = ' '.repeat(maxNameWidth);
         if (r5) resetLine += r5;
         resetLine = resetLine.padEnd(d7ColStart);
         if (r7) resetLine += r7;
         lines.push(resetLine);
       }
+      lines.push('');
     }
     lines.push('```');
   } else {
@@ -235,7 +242,9 @@ async function buildUsageSection(): Promise<string> {
   const cooldown = getCooldownInfo();
   if (cooldown.active) {
     const remainMin = Math.ceil((cooldown.remainingMs || 0) / 60000);
-    lines.push(`\u26A0\uFE0F Fallback \uD65C\uC131 (${cooldown.reason}, ${remainMin}m \uB0A8\uC74C)`);
+    lines.push(
+      `\u26A0\uFE0F Fallback \uD65C\uC131 (${cooldown.reason}, ${remainMin}m \uB0A8\uC74C)`,
+    );
   }
 
   // Token rotation status
@@ -243,7 +252,9 @@ async function buildUsageSection(): Promise<string> {
   if (tokenCount > 1) {
     const statuses = getTokenStatus();
     const available = statuses.filter((s) => s.available).length;
-    lines.push(`\uD83D\uDD11 \uD1A0\uD070: ${available}/${tokenCount} \uC0AC\uC6A9\uAC00\uB2A5`);
+    lines.push(
+      `\uD83D\uDD11 \uD1A0\uD070: ${available}/${tokenCount} \uC0AC\uC6A9\uAC00\uB2A5`,
+    );
   }
 
   return lines.join('\n');

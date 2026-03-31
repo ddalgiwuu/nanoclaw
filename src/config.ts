@@ -71,3 +71,6 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+export const MONITORING_CHANNEL_JID =
+  process.env.NANOCLAW_MONITORING_CHANNEL || 'discord:1488565946632245369';
