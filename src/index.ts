@@ -5,10 +5,16 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  DEFAULT_TRIGGER,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
+  MAX_MESSAGES_PER_PROMPT,
   MONITORING_CHANNEL_JID,
+  ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
+  TRIGGER_PATTERN,
+  getTriggerPattern,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -28,6 +34,7 @@ import {
   deleteSession,
   getAllTasks,
   getMessageFromMe,
+  getLastBotMessageTimestamp,
   getMessagesSince,
   getMessagesSincePaired,
   getNewMessages,
@@ -286,9 +293,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
+  const sinceTimestamp = getOrRecoverCursor(chatJid);
   const missedMessages = getMessagesSince(
     chatJid,
-    getOrRecoverCursor(chatJid),
+    sinceTimestamp,
     ASSISTANT_NAME,
     MAX_MESSAGES_PER_PROMPT,
   );
@@ -349,6 +357,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // For non-main, non-paired groups, check if trigger is required and present
   if (!isPaired && !isMainGroup && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
+    const triggerPattern = getTriggerPattern(group.trigger);
     const hasTrigger = missedMessages.some(
       (m) =>
         triggerPattern.test(m.content.trim()) &&
@@ -1075,10 +1084,17 @@ function recoverPendingMessages(): void {
     saveState();
   }
 
+  const myAgentType = process.env.NANOCLAW_AGENT_TYPE || 'claude-code';
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     // Only recover messages for JIDs owned by a connected channel
     const channel = findChannel(channels, chatJid);
     if (!channel) continue;
+
+    // Only recover for channels registered for THIS agent type
+    const registeredTypes = getRegisteredAgentTypesForJid(chatJid);
+    if (registeredTypes.length > 0 && !registeredTypes.includes(myAgentType as any)) {
+      continue;
+    }
 
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
     const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
@@ -1255,6 +1271,10 @@ async function main(): Promise<void> {
   }
 
   // Start subsystems (independently of connection handler)
+  // Scheduler only runs on claude-code process to avoid duplicate task execution
+  if (process.env.NANOCLAW_AGENT_TYPE === 'codex') {
+    logger.info('Scheduler skipped (codex process)');
+  } else
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
@@ -1281,7 +1301,8 @@ async function main(): Promise<void> {
       await channel.sendMessage(jid, text);
       // Re-enable typing indicator after sending — Telegram auto-clears it on message send.
       // Only re-enable if the agent is still running (more responses coming).
-      if (queue.isActive(jid) && channel.setTyping) {
+      // Skip typing for scheduled tasks — cron jobs don't need typing indicators.
+      if (queue.isActive(jid) && !queue.isTask(jid) && channel.setTyping) {
         channel.setTyping(jid, true).catch(() => {});
       }
     },

@@ -108,7 +108,9 @@ export class CodexAppServerClient {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } else {
-      const codexPackagePath = this.require.resolve('@openai/codex/package.json');
+      const codexPackagePath = this.require.resolve(
+        '@openai/codex/package.json',
+      );
       const codexBin = path.join(
         path.dirname(codexPackagePath),
         'bin',

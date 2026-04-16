@@ -158,14 +158,20 @@ function createSchema(database: Database.Database): void {
 
   // Add agent_type to registered_groups for paired room support
   try {
-    database.exec(`ALTER TABLE registered_groups ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`);
-  } catch { /* column already exists */ }
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`,
+    );
+  } catch {
+    /* column already exists */
+  }
 
   // Migrate registered_groups to composite PK (jid, agent_type) for paired rooms
   // Check if migration is needed by seeing if jid is still the sole PK
   try {
-    const pkInfo = database.prepare(`PRAGMA table_info(registered_groups)`).all() as Array<{ name: string; pk: number }>;
-    const pkColumns = pkInfo.filter(c => c.pk > 0).map(c => c.name);
+    const pkInfo = database
+      .prepare(`PRAGMA table_info(registered_groups)`)
+      .all() as Array<{ name: string; pk: number }>;
+    const pkColumns = pkInfo.filter((c) => c.pk > 0).map((c) => c.name);
     if (pkColumns.length === 1 && pkColumns[0] === 'jid') {
       database.exec(`
         CREATE TABLE registered_groups_new (
@@ -187,7 +193,9 @@ function createSchema(database: Database.Database): void {
         DROP TABLE registered_groups;
         ALTER TABLE registered_groups_new RENAME TO registered_groups;
       `);
-      logger.info('Migrated registered_groups to composite PK (jid, agent_type)');
+      logger.info(
+        'Migrated registered_groups to composite PK (jid, agent_type)',
+      );
     }
   } catch (err) {
     logger.warn({ err }, 'registered_groups PK migration skipped or failed');
@@ -195,8 +203,12 @@ function createSchema(database: Database.Database): void {
 
   // Add agent_type to sessions for per-agent session tracking
   try {
-    database.exec(`ALTER TABLE sessions ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`);
-  } catch { /* column already exists */ }
+    database.exec(
+      `ALTER TABLE sessions ADD COLUMN agent_type TEXT DEFAULT 'claude-code'`,
+    );
+  } catch {
+    /* column already exists */
+  }
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
@@ -437,16 +449,19 @@ export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
   botPrefix: string,
+  limit?: number,
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  const limitClause =
+    typeof limit === 'number' && limit > 0 ? ` LIMIT ${Math.floor(limit)}` : '';
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
       AND is_bot_message = 0 AND content NOT LIKE ?
       AND content != '' AND content IS NOT NULL
-    ORDER BY timestamp
+    ORDER BY timestamp${limitClause}
   `;
   return db
     .prepare(sql)
@@ -783,7 +798,11 @@ export function getSession(groupFolder: string): string | undefined {
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string, agentType?: string): void {
+export function setSession(
+  groupFolder: string,
+  sessionId: string,
+  agentType?: string,
+): void {
   if (agentType) {
     db.prepare(
       'INSERT OR REPLACE INTO sessions (group_folder, session_id, agent_type) VALUES (?, ?, ?)',
@@ -802,7 +821,11 @@ export function deleteSession(groupFolder: string): void {
 export function getAllSessions(): Record<string, string> {
   const rows = db
     .prepare('SELECT group_folder, session_id, agent_type FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string; agent_type: string | null }>;
+    .all() as Array<{
+    group_folder: string;
+    session_id: string;
+    agent_type: string | null;
+  }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
     result[row.group_folder] = row.session_id;
@@ -1068,7 +1091,7 @@ export function isPairedRoomJid(jid: string): boolean {
   const rows = db
     .prepare('SELECT DISTINCT agent_type FROM registered_groups WHERE jid = ?')
     .all(jid) as Array<{ agent_type: string | null }>;
-  const types = new Set(rows.map(r => r.agent_type).filter(Boolean));
+  const types = new Set(rows.map((r) => r.agent_type).filter(Boolean));
   return types.has('claude-code') && types.has('codex');
 }
 
@@ -1077,7 +1100,9 @@ export function getRegisteredAgentTypesForJid(jid: string): string[] {
   const rows = db
     .prepare('SELECT DISTINCT agent_type FROM registered_groups WHERE jid = ?')
     .all(jid) as Array<{ agent_type: string | null }>;
-  return rows.map(r => r.agent_type).filter((t): t is string => t === 'claude-code' || t === 'codex');
+  return rows
+    .map((r) => r.agent_type)
+    .filter((t): t is string => t === 'claude-code' || t === 'codex');
 }
 
 export function getLastHumanMessageTimestamp(chatJid: string): string | null {

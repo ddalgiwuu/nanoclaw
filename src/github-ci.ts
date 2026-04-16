@@ -198,7 +198,11 @@ async function fetchFailedJobs(metadata: GitHubCiMetadata): Promise<string[]> {
 
 // ── Status message rendering ──
 
-export type WatcherStatusPhase = 'checking' | 'waiting' | 'retrying' | 'completed';
+export type WatcherStatusPhase =
+  | 'checking'
+  | 'waiting'
+  | 'retrying'
+  | 'completed';
 
 function formatTimeLabel(timestampIso: string): string {
   return new Intl.DateTimeFormat('en-US', {
@@ -210,7 +214,10 @@ function formatTimeLabel(timestampIso: string): string {
   }).format(new Date(timestampIso));
 }
 
-function formatElapsedLabel(startedAtIso: string, checkedAtIso: string): string {
+function formatElapsedLabel(
+  startedAtIso: string,
+  checkedAtIso: string,
+): string {
   const elapsedMs = Math.max(
     0,
     new Date(checkedAtIso).getTime() - new Date(startedAtIso).getTime(),
@@ -263,7 +270,9 @@ export function renderWatchCiStatusMessage(args: {
   }
   if (args.intervalMs && args.intervalMs > 0) {
     const sec = Math.floor(args.intervalMs / 1000);
-    lines.push(`- Interval: ${sec >= 60 ? `${Math.floor(sec / 60)}m` : `${sec}s`}`);
+    lines.push(
+      `- Interval: ${sec >= 60 ? `${Math.floor(sec / 60)}m` : `${sec}s`}`,
+    );
   }
   if (args.nextRun) {
     lines.push(`- Next check: ${formatTimeLabel(args.nextRun)}`);

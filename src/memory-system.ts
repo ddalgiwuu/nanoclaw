@@ -26,7 +26,13 @@ export function getMemoryPaths(groupFolder: string): MemoryPaths {
 
   // Shared memory from Claude Code (user's cross-session memory)
   const home = process.env.HOME || '';
-  const sharedMemoryDir = path.join(home, '.claude', 'projects', `-Users-${path.basename(home)}`, 'memory');
+  const sharedMemoryDir = path.join(
+    home,
+    '.claude',
+    'projects',
+    `-Users-${path.basename(home)}`,
+    'memory',
+  );
 
   // Project-level memory: discord_borkd-* → projects/borkd/MEMORY.md
   // Extract project name from folder pattern: discord_{project}-{channel}
@@ -34,7 +40,12 @@ export function getMemoryPaths(groupFolder: string): MemoryPaths {
   const projectMatch = groupFolder.match(/^discord_([a-z0-9]+)-/);
   if (projectMatch) {
     const projectName = projectMatch[1];
-    const projectMemoryPath = path.join(GROUPS_DIR, 'projects', projectName, 'MEMORY.md');
+    const projectMemoryPath = path.join(
+      GROUPS_DIR,
+      'projects',
+      projectName,
+      'MEMORY.md',
+    );
     projectMemory = projectMemoryPath;
   }
 
@@ -53,7 +64,10 @@ export function appendDailyLog(groupFolder: string, entry: string): void {
   const paths = getMemoryPaths(groupFolder);
   try {
     fs.mkdirSync(paths.dailyDir, { recursive: true });
-    const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    const timestamp = new Date().toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
     fs.appendFileSync(paths.todayLog, `\n### ${timestamp}\n${entry}\n`);
   } catch (err) {
     logger.error({ groupFolder, err }, 'Failed to append daily log');
@@ -69,8 +83,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
   const isDiscord = groupFolder.startsWith('discord_');
   try {
     if (isDiscord && fs.existsSync(paths.sharedMemoryDir)) {
-      const files = fs.readdirSync(paths.sharedMemoryDir)
-        .filter(f => f.endsWith('.md') && f !== 'MEMORY.md')
+      const files = fs
+        .readdirSync(paths.sharedMemoryDir)
+        .filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
         .sort();
       const sharedParts: string[] = [];
       for (const file of files) {
@@ -83,10 +98,14 @@ export function assembleMemoryContext(groupFolder: string): string | null {
         }
       }
       if (sharedParts.length > 0) {
-        parts.push(`## Shared Memory (Cross-Session)\n${sharedParts.join('\n\n')}`);
+        parts.push(
+          `## Shared Memory (Cross-Session)\n${sharedParts.join('\n\n')}`,
+        );
       }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Global MEMORY.md
   try {
@@ -94,7 +113,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
       const content = fs.readFileSync(paths.global, 'utf-8').trim();
       if (content) parts.push(`## Global Memory\n${content}`);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Project MEMORY.md (shared across project channels, e.g., all borkd-* channels)
   try {
@@ -102,7 +123,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
       const content = fs.readFileSync(paths.projectMemory, 'utf-8').trim();
       if (content) parts.push(`## Project Memory\n${content}`);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Group MEMORY.md (channel-specific)
   try {
@@ -110,7 +133,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
       const content = fs.readFileSync(paths.longTerm, 'utf-8').trim();
       if (content) parts.push(`## Channel Memory\n${content}`);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Yesterday's daily log
   try {
@@ -118,7 +143,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
       const content = fs.readFileSync(paths.yesterdayLog, 'utf-8').trim();
       if (content) parts.push(`## Yesterday's Notes\n${content}`);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Today's daily log
   try {
@@ -126,7 +153,9 @@ export function assembleMemoryContext(groupFolder: string): string | null {
       const content = fs.readFileSync(paths.todayLog, 'utf-8').trim();
       if (content) parts.push(`## Today's Notes\n${content}`);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   if (parts.length === 0) return null;
   return parts.join('\n\n---\n\n');
@@ -146,14 +175,21 @@ export function createMemoryPlugin() {
   return {
     name: 'memory',
     async ingest(
-      messages: Array<{ content: string; sender_name: string; timestamp: string }>,
+      messages: Array<{
+        content: string;
+        sender_name: string;
+        timestamp: string;
+      }>,
       gf: string,
     ) {
       for (const msg of messages) {
         const summary = `[${msg.sender_name}] ${msg.content.slice(0, 200)}`;
         appendDailyLog(gf, summary);
       }
-      logger.info({ groupFolder: gf, count: messages.length }, 'Memory ingest: daily log updated');
+      logger.info(
+        { groupFolder: gf, count: messages.length },
+        'Memory ingest: daily log updated',
+      );
     },
     async assemble(gf: string) {
       const result = assembleMemoryContext(gf);

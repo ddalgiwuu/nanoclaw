@@ -29,7 +29,10 @@ function readKeychainOAuthToken(): string | null {
     }
     logger.debug('Keychain entry found but no accessToken in claudeAiOauth');
   } catch (err) {
-    logger.debug({ err: err instanceof Error ? err.message : String(err) }, 'Keychain read failed');
+    logger.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      'Keychain read failed',
+    );
   }
   return null;
 }
@@ -50,7 +53,10 @@ export function refreshCodexToken(): void {
     const parts = idToken.split('.');
     if (parts.length < 2) return;
     const payload = JSON.parse(
-      Buffer.from(parts[1] + '='.repeat(4 - (parts[1].length % 4)), 'base64').toString(),
+      Buffer.from(
+        parts[1] + '='.repeat(4 - (parts[1].length % 4)),
+        'base64',
+      ).toString(),
     );
     const exp = payload?.exp;
     if (!exp || Date.now() / 1000 < exp - 300) return; // 5 min buffer
@@ -80,9 +86,22 @@ export function initTokenRotation(): void {
   if (initialized) return;
   initialized = true;
 
-  const envFile = readEnvFile(['CLAUDE_CODE_OAUTH_TOKENS', 'CLAUDE_CODE_OAUTH_TOKEN']);
-  const multi = (process.env.CLAUDE_CODE_OAUTH_TOKENS || envFile.CLAUDE_CODE_OAUTH_TOKENS || '').trim() || undefined;
-  let single = (process.env.CLAUDE_CODE_OAUTH_TOKEN || envFile.CLAUDE_CODE_OAUTH_TOKEN || '').trim() || undefined;
+  const envFile = readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKENS',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+  ]);
+  const multi =
+    (
+      process.env.CLAUDE_CODE_OAUTH_TOKENS ||
+      envFile.CLAUDE_CODE_OAUTH_TOKENS ||
+      ''
+    ).trim() || undefined;
+  let single =
+    (
+      process.env.CLAUDE_CODE_OAUTH_TOKEN ||
+      envFile.CLAUDE_CODE_OAUTH_TOKEN ||
+      ''
+    ).trim() || undefined;
 
   // Auto-read from macOS Keychain if no token in .env/environment
   if (!multi && !single) {
@@ -90,15 +109,23 @@ export function initTokenRotation(): void {
     const keychainToken = readKeychainOAuthToken();
     if (keychainToken) {
       single = keychainToken;
-      logger.info({ tokenPrefix: keychainToken.slice(0, 20) }, 'OAuth token loaded from macOS Keychain');
+      logger.info(
+        { tokenPrefix: keychainToken.slice(0, 20) },
+        'OAuth token loaded from macOS Keychain',
+      );
     } else {
       logger.warn('Failed to load OAuth token from macOS Keychain');
     }
   }
 
   const raw = multi
-    ? multi.split(',').map(t => t.trim()).filter(Boolean)
-    : single ? [single] : [];
+    ? multi
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+    : single
+      ? [single]
+      : [];
 
   for (const token of raw) {
     tokens.push({ token, cooldownUntil: 0, failures: 0 });
@@ -106,7 +133,10 @@ export function initTokenRotation(): void {
 
   if (tokens.length > 1) {
     loadState();
-    logger.info({ count: tokens.length, activeIndex: currentIndex }, 'Token rotation initialized');
+    logger.info(
+      { count: tokens.length, activeIndex: currentIndex },
+      'Token rotation initialized',
+    );
   } else if (tokens.length === 1) {
     logger.info('Single token mode (no rotation)');
   } else {
@@ -121,26 +151,40 @@ function loadState(): void {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
-      if (typeof data.currentIndex === 'number' && data.currentIndex < tokens.length) {
+      if (
+        typeof data.currentIndex === 'number' &&
+        data.currentIndex < tokens.length
+      ) {
         currentIndex = data.currentIndex;
       }
       if (Array.isArray(data.cooldowns)) {
-        for (let i = 0; i < Math.min(data.cooldowns.length, tokens.length); i++) {
+        for (
+          let i = 0;
+          i < Math.min(data.cooldowns.length, tokens.length);
+          i++
+        ) {
           tokens[i].cooldownUntil = data.cooldowns[i] || 0;
         }
       }
     }
-  } catch { /* start fresh */ }
+  } catch {
+    /* start fresh */
+  }
 }
 
 function saveState(): void {
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify({
-      currentIndex,
-      cooldowns: tokens.map(t => t.cooldownUntil),
-    }));
-  } catch { /* best effort */ }
+    fs.writeFileSync(
+      STATE_FILE,
+      JSON.stringify({
+        currentIndex,
+        cooldowns: tokens.map((t) => t.cooldownUntil),
+      }),
+    );
+  } catch {
+    /* best effort */
+  }
 }
 
 /**
@@ -203,11 +247,14 @@ export function markTokenRateLimited(retryAfterMs?: number): void {
   const cooldownMs = retryAfterMs || 3600000; // Default 1 hour
   tokens[currentIndex].cooldownUntil = Date.now() + cooldownMs;
   tokens[currentIndex].failures++;
-  logger.warn({
-    index: currentIndex,
-    cooldownMs,
-    failures: tokens[currentIndex].failures,
-  }, 'Token marked rate-limited');
+  logger.warn(
+    {
+      index: currentIndex,
+      cooldownMs,
+      failures: tokens[currentIndex].failures,
+    },
+    'Token marked rate-limited',
+  );
 
   // Try refreshing from Keychain before rotating
   if (tryRefreshFromKeychain()) {
@@ -222,11 +269,42 @@ export function markTokenRateLimited(retryAfterMs?: number): void {
     const nextIndex = (currentIndex + i) % tokens.length;
     if (tokens[nextIndex].cooldownUntil <= Date.now()) {
       currentIndex = nextIndex;
-      logger.info({ from: oldIndex, to: currentIndex }, 'Rotated to next token');
+      logger.info(
+        { from: oldIndex, to: currentIndex },
+        'Rotated to next token',
+      );
       break;
     }
   }
   saveState();
+}
+
+/**
+ * Force-reload the active token from macOS Keychain.
+ * Called before each agent spawn to ensure we always use the latest token,
+ * even if another Claude Code session has refreshed it since NanoClaw started.
+ * Returns true if the token was updated.
+ */
+export function reloadTokenFromKeychain(): boolean {
+  const fresh = readKeychainOAuthToken();
+  if (!fresh) return false;
+
+  if (tokens.length === 0) {
+    tokens.push({ token: fresh, cooldownUntil: 0, failures: 0 });
+    logger.info('OAuth token loaded from Keychain (was empty)');
+    return true;
+  }
+
+  if (tokens[currentIndex].token === fresh) return false;
+
+  tokens[currentIndex].token = fresh;
+  tokens[currentIndex].cooldownUntil = 0;
+  tokens[currentIndex].failures = 0;
+  logger.info(
+    { tokenPrefix: fresh.slice(0, 20) },
+    'OAuth token reloaded from Keychain (changed)',
+  );
+  return true;
 }
 
 export function markTokenHealthy(): void {
@@ -240,7 +318,12 @@ export function getTokenCount(): number {
   return tokens.length;
 }
 
-export function getTokenStatus(): Array<{ index: number; available: boolean; cooldownUntil: number; failures: number }> {
+export function getTokenStatus(): Array<{
+  index: number;
+  available: boolean;
+  cooldownUntil: number;
+  failures: number;
+}> {
   return tokens.map((t, i) => ({
     index: i,
     available: t.cooldownUntil <= Date.now(),

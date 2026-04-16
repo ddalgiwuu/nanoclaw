@@ -32,7 +32,7 @@ export function buildDashboardState(deps: {
   const tokenCount = getTokenCount();
   if (tokenCount > 1) {
     const statuses = getTokenStatus();
-    const available = statuses.filter(s => s.available).length;
+    const available = statuses.filter((s) => s.available).length;
     providerStatus += `\n\u2022 Tokens: ${available}/${tokenCount} available`;
   }
 

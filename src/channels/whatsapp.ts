@@ -78,14 +78,21 @@ export class WhatsAppChannel implements Channel {
       );
       return { version: undefined };
     });
+    // Baileys expects a Pino-compatible logger (with trace/child/level).
+    // Our logger satisfies the call shape; cast through unknown to satisfy the type.
+    const baileysLogger = logger as unknown as Parameters<
+      typeof makeCacheableSignalKeyStore
+    >[1];
     this.sock = makeWASocket({
       version,
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
       },
       printQRInTerminal: false,
-      logger,
+      logger: baileysLogger as unknown as Parameters<
+        typeof makeWASocket
+      >[0]['logger'],
       browser: Browsers.macOS('Chrome'),
     });
 

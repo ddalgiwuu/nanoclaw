@@ -49,7 +49,9 @@ export function loadRestartState(): RestartState | null {
 export function clearRestartState(): void {
   try {
     if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function formatRestartAnnouncement(state: RestartState): string {
@@ -64,13 +66,19 @@ export function formatRestartAnnouncement(state: RestartState): string {
   }
 
   if (state.activeGroups.length > 0) {
-    lines.push(`\u2022 \uC911\uB2E8\uB41C \uADF8\uB8F9: ${state.activeGroups.join(', ')}`);
+    lines.push(
+      `\u2022 \uC911\uB2E8\uB41C \uADF8\uB8F9: ${state.activeGroups.join(', ')}`,
+    );
   }
 
   if (state.pendingMessages > 0) {
-    lines.push(`\u2022 \uB300\uAE30 \uBA54\uC2DC\uC9C0: ${state.pendingMessages}\uAC1C`);
+    lines.push(
+      `\u2022 \uB300\uAE30 \uBA54\uC2DC\uC9C0: ${state.pendingMessages}\uAC1C`,
+    );
   }
 
-  lines.push('\u2022 \uBAA8\uB4E0 \uC11C\uBE44\uC2A4 \uC815\uC0C1 \uC7AC\uAC1C');
+  lines.push(
+    '\u2022 \uBAA8\uB4E0 \uC11C\uBE44\uC2A4 \uC815\uC0C1 \uC7AC\uAC1C',
+  );
   return lines.join('\n');
 }

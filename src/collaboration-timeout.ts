@@ -82,7 +82,11 @@ export function shouldSkipBotOnlyCollaboration(
 
   if (allBotMessages && messages.length >= MAX_BOT_ONLY_MESSAGES) {
     logger.warn(
-      { chatJid, messageCount: messages.length, threshold: MAX_BOT_ONLY_MESSAGES },
+      {
+        chatJid,
+        messageCount: messages.length,
+        threshold: MAX_BOT_ONLY_MESSAGES,
+      },
       'Bot-only collaboration timeout triggered',
     );
     cooldownUntil[chatJid] = now + BOT_ONLY_COOLDOWN_MS;

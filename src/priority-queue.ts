@@ -5,7 +5,14 @@ export enum MessagePriority {
   LOW = 3,
 }
 
-const CONTROL_PATTERNS = [/^\/compact/i, /^\/status/i, /^\/think/i, /^\/prune/i, /^\/stop/i, /^\/reset/i];
+const CONTROL_PATTERNS = [
+  /^\/compact/i,
+  /^\/status/i,
+  /^\/think/i,
+  /^\/prune/i,
+  /^\/stop/i,
+  /^\/reset/i,
+];
 
 export function classifyPriority(content: string): MessagePriority {
   const trimmed = content.replace(/^@\w+\s*/, '').trim();

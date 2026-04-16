@@ -18,7 +18,11 @@ export function selectStreamMode(content: string): StreamMode {
 
 export interface StreamingControllerDeps {
   sendMessage: (chatJid: string, text: string) => Promise<string | null>;
-  editMessage?: (chatJid: string, messageId: string, text: string) => Promise<void>;
+  editMessage?: (
+    chatJid: string,
+    messageId: string,
+    text: string,
+  ) => Promise<void>;
   chunkMessage: (text: string) => string[];
   formatBlocks: (text: string) => string;
 }

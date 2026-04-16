@@ -17,9 +17,14 @@ import {
   removeTask,
 } from './task-status-tracker.js';
 import { RegisteredGroup } from './types.js';
-import { isRateLimitError, getCooldownMs, getActiveProvider, getFallbackEnvOverrides } from './provider-fallback.js';
+import {
+  isRateLimitError,
+  getCooldownMs,
+  getActiveProvider,
+  getFallbackEnvOverrides,
+} from './provider-fallback.js';
 import { recordAction, detectLoop, resetLoop } from './loop-detector.js';
-import { getCurrentToken, refreshCodexToken } from './token-rotation.js';
+import { getCurrentToken, refreshCodexToken, reloadTokenFromKeychain } from './token-rotation.js';
 
 const MAX_RATE_LIMIT_RETRIES = 3;
 
@@ -43,6 +48,7 @@ export interface AgentInput {
   assistantName?: string;
   agentType?: 'claude-code' | 'codex';
   thinkingEnv?: Record<string, string>;
+  script?: string;
 }
 
 export interface AgentOutput {
@@ -145,8 +151,12 @@ function buildAgentEnv(
     'GROQ_API_KEY',
   ]);
 
+  const scriptsDir = path.join(projectRoot, 'scripts');
+  const currentPath = process.env.PATH || '';
+
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    PATH: `${scriptsDir}:${currentPath}`,
     // Agent identity
     TZ: TIMEZONE,
     HOME: process.env.HOME || '',
@@ -235,9 +245,18 @@ function spawnAgentOnce(
 ): Promise<AgentOutput> {
   const startTime = Date.now();
 
+  // Always reload token from Keychain before spawning — another CC session
+  // may have refreshed the token since NanoClaw started, revoking the old one.
+  reloadTokenFromKeychain();
+
   const env = buildAgentEnv(group, input.isMain);
   env.NANOCLAW_CHAT_JID = input.chatJid;
   env.NANOCLAW_AGENT_TYPE = input.agentType || 'claude-code';
+
+  // Use Sonnet for scheduled tasks to save cost
+  if (input.isScheduledTask) {
+    env.CLAUDE_CODE_MODEL = 'claude-sonnet-4-6-20250514';
+  }
 
   // Apply thinking level environment variables
   if (input.thinkingEnv) {
@@ -384,7 +403,10 @@ function spawnAgentOnce(
         recordAction(group.folder, stderrLine.slice(0, 200));
         const loopCheck = detectLoop(group.folder);
         if (loopCheck.looping && loopCheck.severity === 'block') {
-          logger.error({ group: group.name, pattern: loopCheck.pattern }, 'Loop detected, killing agent');
+          logger.error(
+            { group: group.name, pattern: loopCheck.pattern },
+            'Loop detected, killing agent',
+          );
           agentProc.kill('SIGTERM');
         }
       }

@@ -1,6 +1,13 @@
 import { logger } from './logger.js';
 
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'adaptive';
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'adaptive';
 
 interface SessionState {
   sessionId: string;
@@ -25,7 +32,11 @@ export function setSessionId(groupFolder: string, sessionId: string): void {
   if (existing) {
     existing.sessionId = sessionId;
   } else {
-    sessions.set(groupFolder, { sessionId, thinkingLevel: 'medium', activeAt: 0 });
+    sessions.set(groupFolder, {
+      sessionId,
+      thinkingLevel: 'medium',
+      activeAt: 0,
+    });
   }
 }
 
@@ -40,12 +51,19 @@ export function getSessionThinkingLevel(groupFolder: string): ThinkingLevel {
   return 'high'; // High thinking for deep work
 }
 
-export function setSessionThinkingLevel(groupFolder: string, level: ThinkingLevel): void {
+export function setSessionThinkingLevel(
+  groupFolder: string,
+  level: ThinkingLevel,
+): void {
   const existing = sessions.get(groupFolder);
   if (existing) {
     existing.thinkingLevel = level;
   } else {
-    sessions.set(groupFolder, { sessionId: '', thinkingLevel: level, activeAt: 0 });
+    sessions.set(groupFolder, {
+      sessionId: '',
+      thinkingLevel: level,
+      activeAt: 0,
+    });
   }
 }
 
@@ -67,11 +85,23 @@ export function getActiveCount(): number {
   return count;
 }
 
-export function getAllSessionEntries(): Array<{ groupFolder: string; sessionId: string; thinkingLevel: ThinkingLevel }> {
-  const result: Array<{ groupFolder: string; sessionId: string; thinkingLevel: ThinkingLevel }> = [];
+export function getAllSessionEntries(): Array<{
+  groupFolder: string;
+  sessionId: string;
+  thinkingLevel: ThinkingLevel;
+}> {
+  const result: Array<{
+    groupFolder: string;
+    sessionId: string;
+    thinkingLevel: ThinkingLevel;
+  }> = [];
   for (const [folder, state] of sessions) {
     if (state.sessionId) {
-      result.push({ groupFolder: folder, sessionId: state.sessionId, thinkingLevel: state.thinkingLevel });
+      result.push({
+        groupFolder: folder,
+        sessionId: state.sessionId,
+        thinkingLevel: state.thinkingLevel,
+      });
     }
   }
   return result;

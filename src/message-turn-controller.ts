@@ -36,9 +36,7 @@ export type AgentOutputPhase =
  */
 export type VisiblePhase = 'silent' | 'progress' | 'final';
 
-export function toVisiblePhase(
-  phase: AgentOutputPhase,
-): VisiblePhase {
+export function toVisiblePhase(phase: AgentOutputPhase): VisiblePhase {
   switch (phase) {
     case 'intermediate':
     case 'tool-activity':

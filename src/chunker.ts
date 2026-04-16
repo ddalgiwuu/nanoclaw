@@ -57,5 +57,5 @@ export function chunkMessage(text: string, opts?: ChunkOptions): string[] {
     remaining = remaining.slice(maxLen);
   }
 
-  return chunks.filter(c => c.length > 0);
+  return chunks.filter((c) => c.length > 0);
 }

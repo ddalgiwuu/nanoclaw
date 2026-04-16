@@ -27,16 +27,25 @@ const maxSpawnDepth = parseInt(process.env.NANOCLAW_MAX_SPAWN_DEPTH || '1', 10);
 // Determine if this agent can spawn subagents based on depth limits
 const canSpawnSubagents = subagentDepth < maxSpawnDepth;
 
-function writeIpcFile(dir: string, data: object, dedupContent?: string): string {
+function writeIpcFile(
+  dir: string,
+  data: object,
+  dedupContent?: string,
+): string {
   fs.mkdirSync(dir, { recursive: true });
 
   // If dedupContent provided, use hash-based filename to prevent duplicate files
   let filename: string;
   if (dedupContent) {
-    const hash = createHash('sha256').update(dedupContent).digest('hex').slice(0, 16);
+    const hash = createHash('sha256')
+      .update(dedupContent)
+      .digest('hex')
+      .slice(0, 16);
     filename = `${Date.now()}-${hash}.json`;
     // Check if a file with same hash already exists (within last few seconds)
-    const existing = fs.readdirSync(dir).filter(f => f.includes(hash) && f.endsWith('.json'));
+    const existing = fs
+      .readdirSync(dir)
+      .filter((f) => f.includes(hash) && f.endsWith('.json'));
     if (existing.length > 0) {
       return existing[0]; // Already written, skip
     }
@@ -68,7 +77,9 @@ function hasAlreadySent(hash: string): boolean {
     try {
       const stat = fs.statSync(lockFile);
       if (Date.now() - stat.mtimeMs < 5 * 1000) return true;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   return false;
 }
@@ -86,9 +97,13 @@ function cleanOldHashes(): void {
       const p = path.join(SENT_HASHES_DIR, f);
       try {
         if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 // Clean old hashes on startup
@@ -96,7 +111,7 @@ cleanOldHashes();
 
 server.tool(
   'send_message',
-  "Send a message to the user or group. You can call this for progress updates or final responses.",
+  'Send a message to the user or group. You can call this for progress updates or final responses.',
   {
     text: z.string().describe('The message text to send'),
     sender: z
@@ -108,9 +123,7 @@ server.tool(
     image: z
       .string()
       .optional()
-      .describe(
-        'Absolute path to an image file to send as a photo',
-      ),
+      .describe('Absolute path to an image file to send as a photo'),
   },
   async (args) => {
     // Dedup is handled by IPC watcher (DB-level), no file-based lock needed here.
@@ -142,7 +155,9 @@ server.tool(
   'send_reaction',
   'React to the latest user message with an emoji. Use this to acknowledge messages, show you understood, or react naturally.',
   {
-    emoji: z.string().describe('The emoji to react with (e.g. "👍", "❤️", "😂", "🤔", "✅")'),
+    emoji: z
+      .string()
+      .describe('The emoji to react with (e.g. "👍", "❤️", "😂", "🤔", "✅")'),
   },
   async (args) => {
     // Only the main agent can send reactions.
@@ -168,7 +183,9 @@ server.tool(
 
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: `Reacted with ${args.emoji}` }] };
+    return {
+      content: [{ type: 'text' as const, text: `Reacted with ${args.emoji}` }],
+    };
   },
 );
 
@@ -599,13 +616,21 @@ server.tool(
   'Delete a message in a Telegram chat. Only works for Telegram channels (jid starting with "tg:").',
   {
     message_id: z.number().describe('The message ID to delete'),
-    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+    chat_id: z
+      .string()
+      .optional()
+      .describe('Optional: specific chat ID (defaults to current chat)'),
   },
   async (args) => {
     // Only allow in Telegram chats
     if (!chatJid.startsWith('tg:')) {
       return {
-        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: This tool only works in Telegram chats.',
+          },
+        ],
         isError: true,
       };
     }
@@ -622,7 +647,12 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return {
-      content: [{ type: 'text' as const, text: `Delete request sent for message ${args.message_id}` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `Delete request sent for message ${args.message_id}`,
+        },
+      ],
     };
   },
 );
@@ -633,12 +663,20 @@ server.tool(
   {
     message_id: z.number().describe('The message ID to edit'),
     new_text: z.string().describe('The new text content'),
-    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+    chat_id: z
+      .string()
+      .optional()
+      .describe('Optional: specific chat ID (defaults to current chat)'),
   },
   async (args) => {
     if (!chatJid.startsWith('tg:')) {
       return {
-        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: This tool only works in Telegram chats.',
+          },
+        ],
         isError: true,
       };
     }
@@ -656,7 +694,12 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return {
-      content: [{ type: 'text' as const, text: `Edit request sent for message ${args.message_id}` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `Edit request sent for message ${args.message_id}`,
+        },
+      ],
     };
   },
 );
@@ -666,14 +709,28 @@ server.tool(
   'Create a new forum topic in a Telegram supergroup. Only works for Telegram channels (jid starting with "tg:").',
   {
     name: z.string().describe('The name of the new topic'),
-    icon_color: z.number().optional().describe('Optional: Icon color as a number (Telegram color format)'),
-    icon_emoji: z.string().optional().describe('Optional: Custom emoji ID for the topic icon'),
-    chat_id: z.string().optional().describe('Optional: specific chat ID (defaults to current chat)'),
+    icon_color: z
+      .number()
+      .optional()
+      .describe('Optional: Icon color as a number (Telegram color format)'),
+    icon_emoji: z
+      .string()
+      .optional()
+      .describe('Optional: Custom emoji ID for the topic icon'),
+    chat_id: z
+      .string()
+      .optional()
+      .describe('Optional: specific chat ID (defaults to current chat)'),
   },
   async (args) => {
     if (!chatJid.startsWith('tg:')) {
       return {
-        content: [{ type: 'text' as const, text: 'Error: This tool only works in Telegram chats.' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: This tool only works in Telegram chats.',
+          },
+        ],
         isError: true,
       };
     }
@@ -692,7 +749,12 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return {
-      content: [{ type: 'text' as const, text: `Create topic request sent: "${args.name}"` }],
+      content: [
+        {
+          type: 'text' as const,
+          text: `Create topic request sent: "${args.name}"`,
+        },
+      ],
     };
   },
 );
@@ -702,9 +764,19 @@ server.tool(
   'announce',
   'Send a real-time progress update or status report to the parent agent while working. Use this to keep the parent informed of your progress before final completion. Examples: "Starting analysis of file A...", "50% complete - found 3 issues", "Waiting for API response..."',
   {
-    message: z.string().describe('The progress update or status message to send to the parent agent'),
-    progress_percent: z.number().optional().describe('Optional: Progress percentage (0-100)'),
-    status: z.enum(['running', 'waiting', 'complete', 'error']).optional().describe('Current status'),
+    message: z
+      .string()
+      .describe(
+        'The progress update or status message to send to the parent agent',
+      ),
+    progress_percent: z
+      .number()
+      .optional()
+      .describe('Optional: Progress percentage (0-100)'),
+    status: z
+      .enum(['running', 'waiting', 'complete', 'error'])
+      .optional()
+      .describe('Current status'),
   },
   async (args) => {
     const data = {
@@ -731,10 +803,12 @@ server.tool(
   {},
   async () => {
     return {
-      content: [{
-        type: 'text' as const,
-        text: 'Usage tracking available via /status command.',
-      }],
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Usage tracking available via /status command.',
+        },
+      ],
     };
   },
 );

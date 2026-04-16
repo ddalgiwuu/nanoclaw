@@ -18,6 +18,7 @@ import { logger } from './logger.js';
 import { DATA_DIR } from './config.js';
 import { getAllChats, getAllRegisteredGroups, getAllTasks } from './db.js';
 import { fetchClaudeUsage, type ClaudeUsageData } from './usage-dashboard.js';
+import { getTodayUsage } from './token-tracker.js';
 import { getCooldownInfo } from './provider-fallback.js';
 import { getTokenCount, getTokenStatus } from './token-rotation.js';
 import type { RegisteredGroup, ScheduledTask } from './types.js';
@@ -193,7 +194,18 @@ async function buildUsageSection(): Promise<string> {
       rows.push(...buildClaudeUsageRows(usage));
     }
   } catch (err) {
-    logger.warn({ err }, 'Failed to fetch Claude usage for dashboard');
+    logger.debug({ err }, 'Usage API unavailable, using local tracking');
+  }
+
+  // Fallback: show local token tracker data when API fails
+  if (rows.length === 0) {
+    const today = getTodayUsage();
+    if (today.inputTokens > 0 || today.outputTokens > 0) {
+      lines.push(`  In: ${today.inputTokens.toLocaleString()} / Out: ${today.outputTokens.toLocaleString()} / Cost: $${today.costUsd.toFixed(4)} (today)`);
+    } else {
+      lines.push('  No usage recorded today');
+    }
+    return lines.join('\n');
   }
 
   if (rows.length > 0) {

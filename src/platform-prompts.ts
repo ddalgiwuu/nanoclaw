@@ -19,13 +19,13 @@ export function readPairedRoomPrompt(
 ): string | undefined {
   // Determine prompt type based on channel
   const isTribunal = groupFolder?.includes('collab');
-  const isDesign = groupFolder?.includes('design') && !groupFolder?.includes('design-qa');
+  const isDesign =
+    groupFolder?.includes('design') && !groupFolder?.includes('design-qa');
   const isDesignQa = groupFolder?.includes('design-qa');
 
   if (isTribunal) {
-    const filename = agentType === 'codex'
-      ? 'collab-reviewer.md'
-      : 'collab-owner.md';
+    const filename =
+      agentType === 'codex' ? 'collab-reviewer.md' : 'collab-owner.md';
     const content = readPromptFile(filename);
     if (content) return content;
   }
@@ -35,18 +35,16 @@ export function readPairedRoomPrompt(
   }
 
   if (isDesignQa) {
-    const filename = agentType === 'codex'
-      ? 'design-qa.md'
-      : 'design-implementer.md';
+    const filename =
+      agentType === 'codex' ? 'design-qa.md' : 'design-implementer.md';
     return readPromptFile(filename);
   }
 
   // All other paired channels: full harness (collab-owner/reviewer)
   // This applies Eval Rubric, Stagnation Detection, Security Baseline,
   // Mention Protocol to ALL paired rooms (tasks, review, collab, etc.)
-  const filename = agentType === 'codex'
-    ? 'collab-reviewer.md'
-    : 'collab-owner.md';
+  const filename =
+    agentType === 'codex' ? 'collab-reviewer.md' : 'collab-owner.md';
   return readPromptFile(filename);
 }
 

@@ -20,7 +20,10 @@ export async function pruneSession(deps: {
   sessionId: string;
   mode: PruneMode;
   sendMessage: (text: string) => Promise<void>;
-  runAgent: (prompt: string, onOutput: (r: any) => Promise<void>) => Promise<'success' | 'error'>;
+  runAgent: (
+    prompt: string,
+    onOutput: (r: any) => Promise<void>,
+  ) => Promise<'success' | 'error'>;
 }): Promise<PruneResult> {
   const { groupFolder, sessionId, mode, sendMessage, runAgent } = deps;
 
@@ -30,9 +33,10 @@ export async function pruneSession(deps: {
 
   logger.info({ groupFolder, mode }, 'Starting context pruning');
 
-  const prompt = mode === 'hard'
-    ? '/compact Remove all old tool results and keep only the last 3 exchanges. Be aggressive about trimming.'
-    : '/compact Summarize old tool results briefly, keep recent context intact.';
+  const prompt =
+    mode === 'hard'
+      ? '/compact Remove all old tool results and keep only the last 3 exchanges. Be aggressive about trimming.'
+      : '/compact Summarize old tool results briefly, keep recent context intact.';
 
   await sendMessage(`✂️ Pruning session (${mode} mode)...`);
 

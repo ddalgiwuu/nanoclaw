@@ -1,12 +1,19 @@
 import { logger } from './logger.js';
 
-export type BlockType = 'text' | 'code' | 'header' | 'list' | 'table' | 'quote' | 'divider';
+export type BlockType =
+  | 'text'
+  | 'code'
+  | 'header'
+  | 'list'
+  | 'table'
+  | 'quote'
+  | 'divider';
 
 export interface ContentBlock {
   type: BlockType;
   content: string;
   language?: string; // for code blocks
-  level?: number;    // for headers (1-3)
+  level?: number; // for headers (1-3)
 }
 
 /**
@@ -45,7 +52,11 @@ export function detectBlocks(text: string): ContentBlock[] {
     // Header (# ## ###)
     const headerMatch = line.match(/^(#{1,3})\s+(.+)/);
     if (headerMatch) {
-      blocks.push({ type: 'header', content: headerMatch[2], level: headerMatch[1].length });
+      blocks.push({
+        type: 'header',
+        content: headerMatch[2],
+        level: headerMatch[1].length,
+      });
       i++;
       continue;
     }
@@ -53,7 +64,10 @@ export function detectBlocks(text: string): ContentBlock[] {
     // Quote (>)
     if (line.startsWith('> ') || line === '>') {
       const quoteLines: string[] = [];
-      while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>')) {
+      while (
+        i < lines.length &&
+        (lines[i].startsWith('> ') || lines[i] === '>')
+      ) {
         quoteLines.push(lines[i].replace(/^>\s?/, ''));
         i++;
       }
@@ -64,7 +78,12 @@ export function detectBlocks(text: string): ContentBlock[] {
     // List (- * + or 1.)
     if (/^[\s]*[-*+]\s/.test(line) || /^[\s]*\d+\.\s/.test(line)) {
       const listLines: string[] = [];
-      while (i < lines.length && (/^[\s]*[-*+]\s/.test(lines[i]) || /^[\s]*\d+\.\s/.test(lines[i]) || /^\s{2,}/.test(lines[i]))) {
+      while (
+        i < lines.length &&
+        (/^[\s]*[-*+]\s/.test(lines[i]) ||
+          /^[\s]*\d+\.\s/.test(lines[i]) ||
+          /^\s{2,}/.test(lines[i]))
+      ) {
         listLines.push(lines[i]);
         i++;
       }
@@ -75,7 +94,11 @@ export function detectBlocks(text: string): ContentBlock[] {
     // Table (|)
     if (line.includes('|') && line.trim().startsWith('|')) {
       const tableLines: string[] = [];
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim().startsWith('|')) {
+      while (
+        i < lines.length &&
+        lines[i].includes('|') &&
+        lines[i].trim().startsWith('|')
+      ) {
         tableLines.push(lines[i]);
         i++;
       }
@@ -91,11 +114,17 @@ export function detectBlocks(text: string): ContentBlock[] {
 
     // Text (default) — collect consecutive non-special lines
     const textLines: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' &&
-      !lines[i].startsWith('```') && !lines[i].match(/^#{1,3}\s/) &&
-      !lines[i].startsWith('> ') && !/^[-*=]{3,}\s*$/.test(lines[i]) &&
+    while (
+      i < lines.length &&
+      lines[i].trim() !== '' &&
+      !lines[i].startsWith('```') &&
+      !lines[i].match(/^#{1,3}\s/) &&
+      !lines[i].startsWith('> ') &&
+      !/^[-*=]{3,}\s*$/.test(lines[i]) &&
       !(lines[i].includes('|') && lines[i].trim().startsWith('|')) &&
-      !/^[\s]*[-*+]\s/.test(lines[i]) && !/^[\s]*\d+\.\s/.test(lines[i])) {
+      !/^[\s]*[-*+]\s/.test(lines[i]) &&
+      !/^[\s]*\d+\.\s/.test(lines[i])
+    ) {
       textLines.push(lines[i]);
       i++;
     }
@@ -134,7 +163,10 @@ export function formatBlockForTelegram(block: ContentBlock): string {
 }
 
 function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**

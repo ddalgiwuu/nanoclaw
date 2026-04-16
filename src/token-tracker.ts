@@ -33,7 +33,10 @@ export function recordUsage(usage: TokenUsage): void {
   }
 }
 
-export function getUsageSince(since: string, groupFolder?: string): TokenUsage[] {
+export function getUsageSince(
+  since: string,
+  groupFolder?: string,
+): TokenUsage[] {
   const rows = queryTokenUsageSince(since, groupFolder);
   return rows.map((r) => ({
     groupFolder: r.group_folder,
@@ -46,7 +49,11 @@ export function getUsageSince(since: string, groupFolder?: string): TokenUsage[]
   }));
 }
 
-export function getTodayUsage(groupFolder?: string): { inputTokens: number; outputTokens: number; costUsd: number } {
+export function getTodayUsage(groupFolder?: string): {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+} {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const agg = aggregateTokenUsageSince(todayStart.toISOString(), groupFolder);

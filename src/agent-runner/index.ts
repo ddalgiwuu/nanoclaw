@@ -369,10 +369,16 @@ function drainAnnounceMessages(): string[] {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
         if (data.type === 'announce' && data.message) {
-          const progress = data.progress !== undefined ? `[${data.progress}%] ` : '';
+          const progress =
+            data.progress !== undefined ? `[${data.progress}%] ` : '';
           const status = data.status ? `(${data.status}) ` : '';
-          const fromDepth = data.fromDepth !== undefined ? `[Subagent depth ${data.fromDepth}] ` : '';
-          messages.push(`[ANNOUNCE] ${fromDepth}${progress}${status}${data.message}`);
+          const fromDepth =
+            data.fromDepth !== undefined
+              ? `[Subagent depth ${data.fromDepth}] `
+              : '';
+          messages.push(
+            `[ANNOUNCE] ${fromDepth}${progress}${status}${data.message}`,
+          );
         }
       } catch (err) {
         log(
@@ -387,7 +393,9 @@ function drainAnnounceMessages(): string[] {
     }
     return messages;
   } catch (err) {
-    log(`Announce drain error: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `Announce drain error: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }
@@ -528,7 +536,8 @@ async function runQuery(
     // Main agent
     subagentPrompt = `\n\n[SUBAGENT INFO] You are at depth 0 (main agent). You can spawn up to ${maxSubagents} subagents. Current max spawn depth: ${maxSpawnDepth}.`;
     if (maxSpawnDepth >= 2) {
-      subagentPrompt += ' Subagents you spawn can also spawn their own subagents (orchestrator pattern).';
+      subagentPrompt +=
+        ' Subagents you spawn can also spawn their own subagents (orchestrator pattern).';
     }
   } else if (canSpawnSubagents) {
     // Orchestrator subagent (depth 1 with maxSpawnDepth >= 2)
@@ -687,7 +696,7 @@ async function main(): Promise<void> {
   let teamPlanningMode = false;
   let teamModeEnabled = containerInput.enableTeamAgent || false;
   let maxSubagents = containerInput.maxSubagents || 3; // Default: 3 subagents
-  
+
   if (isTeamCommand) {
     // Enter planning mode - strip /team prefix and add planning instructions
     const teamPrompt = prompt.trim().slice(5).trim();
@@ -717,7 +726,9 @@ User's request: ${teamPrompt}`;
   let resumeAt: string | undefined;
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, teamMode: ${teamModeEnabled}, maxSubagents: ${maxSubagents}, planning: ${teamPlanningMode})...`);
+      log(
+        `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, teamMode: ${teamModeEnabled}, maxSubagents: ${maxSubagents}, planning: ${teamPlanningMode})...`,
+      );
 
       // Enable team mode after planning is confirmed
       if (teamPlanningMode) {
@@ -732,9 +743,13 @@ User's request: ${teamPrompt}`;
           // Update max subagents if user specified a number
           if (yesMatch[1]) {
             maxSubagents = parseInt(yesMatch[1], 10);
-            log(`Team plan confirmed with ${maxSubagents} subagents, maxSpawnDepth: 2`);
+            log(
+              `Team plan confirmed with ${maxSubagents} subagents, maxSpawnDepth: 2`,
+            );
           } else {
-            log('Team plan confirmed, using proposed subagent count, maxSpawnDepth: 2');
+            log(
+              'Team plan confirmed, using proposed subagent count, maxSpawnDepth: 2',
+            );
           }
           // Update prompt to proceed with execution
           prompt = `[TEAM AGENT EXECUTION MODE]\n\nProceed with the planned team execution. You can use up to ${maxSubagents} subagents. Subagents can also spawn their own subagents (orchestrator pattern).\n\nOriginal request: ${prompt}`;
@@ -748,10 +763,17 @@ User's request: ${teamPrompt}`;
         maxSpawnDepth: containerInput.maxSpawnDepth || 1, // Default: depth 1 (main can spawn, subagents cannot)
       };
       const queryResult = await runQuery(
-        prompt, sessionId, mcpServerPath, currentContainerInput, sdkEnv, resumeAt, teamModeEnabled,
+        prompt,
+        sessionId,
+        mcpServerPath,
+        currentContainerInput,
+        sdkEnv,
+        resumeAt,
+        teamModeEnabled,
       );
       if (queryResult.newSessionId) sessionId = queryResult.newSessionId;
-      if (queryResult.lastAssistantUuid) resumeAt = queryResult.lastAssistantUuid;
+      if (queryResult.lastAssistantUuid)
+        resumeAt = queryResult.lastAssistantUuid;
 
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');

@@ -4,10 +4,10 @@ import fs from 'fs';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
-  ContainerOutput,
-  runContainerAgent,
+  AgentOutput,
+  runHostAgent,
   writeTasksSnapshot,
-} from './container-runner.js';
+} from './host-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -170,7 +170,7 @@ async function runTask(
   };
 
   try {
-    const output = await runContainerAgent(
+    const output = await runHostAgent(
       group,
       {
         prompt: task.prompt,
@@ -182,9 +182,9 @@ async function runTask(
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
       },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
-      async (streamedOutput: ContainerOutput) => {
+      (proc, processId) =>
+        deps.onProcess(task.chat_jid, proc, processId, task.group_folder),
+      async (streamedOutput: AgentOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)

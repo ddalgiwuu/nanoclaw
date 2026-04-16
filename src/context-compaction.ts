@@ -14,7 +14,10 @@ export async function compactSession(deps: {
   sessionId: string;
   instructions?: string;
   sendMessage: (text: string) => Promise<void>;
-  runAgent: (prompt: string, onOutput: (r: any) => Promise<void>) => Promise<'success' | 'error'>;
+  runAgent: (
+    prompt: string,
+    onOutput: (r: any) => Promise<void>,
+  ) => Promise<'success' | 'error'>;
 }): Promise<CompactionResult> {
   const { groupFolder, sessionId, instructions, sendMessage, runAgent } = deps;
 
@@ -25,14 +28,15 @@ export async function compactSession(deps: {
   logger.info({ groupFolder, sessionId }, 'Starting context compaction');
   await sendMessage('🧹 Compacting session...');
 
-  const compactPrompt = instructions
-    ? `/compact ${instructions}`
-    : '/compact';
+  const compactPrompt = instructions ? `/compact ${instructions}` : '/compact';
 
   let resultText: string | null = null;
   const status = await runAgent(compactPrompt, async (output) => {
     if (output.result) {
-      resultText = typeof output.result === 'string' ? output.result : JSON.stringify(output.result);
+      resultText =
+        typeof output.result === 'string'
+          ? output.result
+          : JSON.stringify(output.result);
     }
   });
 

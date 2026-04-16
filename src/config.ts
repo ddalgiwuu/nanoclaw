@@ -74,6 +74,12 @@ export function buildTriggerPattern(trigger: string): RegExp {
   return new RegExp(`^${escapeRegex(trigger.trim())}\\b`, 'i');
 }
 
+export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
+export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+export function getTriggerPattern(trigger: string | undefined | null): RegExp {
+  return buildTriggerPattern(trigger || DEFAULT_TRIGGER);
+}
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =

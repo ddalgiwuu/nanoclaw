@@ -15,7 +15,10 @@ export class MessageDebouncer {
 
   shouldProcess(chatJid: string, content: string): boolean {
     this.cleanup();
-    const hash = createHash('sha256').update(`${chatJid}:${content}`).digest('hex').slice(0, 16);
+    const hash = createHash('sha256')
+      .update(`${chatJid}:${content}`)
+      .digest('hex')
+      .slice(0, 16);
     const key = `${chatJid}:${hash}`;
     const existing = this.entries.get(key);
     if (existing && existing.expiresAt > Date.now()) {

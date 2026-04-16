@@ -24,11 +24,17 @@ export function recordAgentResult(groupFolder: string, success: boolean): void {
   errorCounts.set(groupFolder, count);
 }
 
-export function shouldResetSession(groupFolder: string, errorText?: string): boolean {
+export function shouldResetSession(
+  groupFolder: string,
+  errorText?: string,
+): boolean {
   // Check consecutive error count
   const count = errorCounts.get(groupFolder) || 0;
   if (count >= MAX_CONSECUTIVE_ERRORS) {
-    logger.warn({ groupFolder, errorCount: count }, 'Max consecutive errors, recommending session reset');
+    logger.warn(
+      { groupFolder, errorCount: count },
+      'Max consecutive errors, recommending session reset',
+    );
     return true;
   }
 
@@ -36,7 +42,10 @@ export function shouldResetSession(groupFolder: string, errorText?: string): boo
   if (errorText) {
     for (const pattern of SESSION_RESET_PATTERNS) {
       if (pattern.test(errorText)) {
-        logger.warn({ groupFolder, pattern: pattern.source }, 'Poisoned session detected');
+        logger.warn(
+          { groupFolder, pattern: pattern.source },
+          'Poisoned session detected',
+        );
         return true;
       }
     }

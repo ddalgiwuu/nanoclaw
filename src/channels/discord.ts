@@ -89,7 +89,7 @@ class DiscordChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    this.client.on('messageCreate', (msg: Message) => {
+    this.client.on('messageCreate', async (msg: Message) => {
       // Ignore bot messages (prevents self-loop)
       // But in paired rooms we might want other bot's messages — handled at DB level
       if (msg.author.id === this.client.user?.id) return;
@@ -116,6 +116,22 @@ class DiscordChannel implements Channel {
         content = content.replace(`<@${botId}>`, `@${ASSISTANT_NAME}`).trim();
         if (!TRIGGER_PATTERN.test(content)) {
           content = `@${ASSISTANT_NAME} ${content}`;
+        }
+      }
+
+      // If this is a Discord reply, fetch the referenced message and prepend as quoted context
+      if (msg.reference?.messageId) {
+        try {
+          const referenced = await msg.fetchReference();
+          const refAuthor =
+            referenced.member?.displayName ||
+            referenced.author.displayName ||
+            referenced.author.username;
+          const refContent = referenced.content || '(no text content)';
+          // Prepend referenced message as quoted context so the agent sees what's being replied to
+          content = `[답장 대상 — ${refAuthor}]:\n> ${refContent.replace(/\n/g, '\n> ')}\n\n${content}`;
+        } catch (err) {
+          logger.debug({ err, refId: msg.reference.messageId }, 'Failed to fetch referenced message');
         }
       }
 
@@ -254,11 +270,7 @@ class DiscordChannel implements Channel {
       logger.debug({ jid }, 'No last message ID to react to');
       return;
     }
-    await this.sendReaction(
-      jid,
-      { id: lastMsgId, remoteJid: jid },
-      emoji,
-    );
+    await this.sendReaction(jid, { id: lastMsgId, remoteJid: jid }, emoji);
   }
 
   isConnected(): boolean {

@@ -205,7 +205,9 @@ export class GroupQueue {
             state.process.kill('SIGKILL');
             logger.info({ groupJid }, 'Force-killed agent process (SIGKILL)');
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }, 5000);
       logger.info({ groupJid }, 'Killed agent process (idle timeout)');
     } catch {
@@ -366,6 +368,10 @@ export class GroupQueue {
 
   isActive(groupJid: string): boolean {
     return this.getGroup(groupJid).active;
+  }
+
+  isTask(groupJid: string): boolean {
+    return this.getGroup(groupJid).isTaskContainer;
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {

@@ -2,7 +2,14 @@ import { logger } from './logger.js';
 
 export interface ContextPlugin {
   name: string;
-  ingest?(messages: Array<{ content: string; sender_name: string; timestamp: string }>, groupFolder: string): Promise<void>;
+  ingest?(
+    messages: Array<{
+      content: string;
+      sender_name: string;
+      timestamp: string;
+    }>,
+    groupFolder: string,
+  ): Promise<void>;
   assemble?(groupFolder: string): Promise<string | null>;
   compact?(groupFolder: string): Promise<void>;
   afterTurn?(groupFolder: string, result: string): Promise<void>;
@@ -28,7 +35,10 @@ export async function runIngest(
       try {
         await plugin.ingest(messages, groupFolder);
       } catch (err) {
-        logger.error({ plugin: plugin.name, err }, 'Context plugin ingest error');
+        logger.error(
+          { plugin: plugin.name, err },
+          'Context plugin ingest error',
+        );
       }
     }
   }
@@ -42,7 +52,10 @@ export async function runAssemble(groupFolder: string): Promise<string[]> {
         const result = await plugin.assemble(groupFolder);
         if (result) additions.push(result);
       } catch (err) {
-        logger.error({ plugin: plugin.name, err }, 'Context plugin assemble error');
+        logger.error(
+          { plugin: plugin.name, err },
+          'Context plugin assemble error',
+        );
       }
     }
   }
@@ -55,19 +68,28 @@ export async function runCompact(groupFolder: string): Promise<void> {
       try {
         await plugin.compact(groupFolder);
       } catch (err) {
-        logger.error({ plugin: plugin.name, err }, 'Context plugin compact error');
+        logger.error(
+          { plugin: plugin.name, err },
+          'Context plugin compact error',
+        );
       }
     }
   }
 }
 
-export async function runAfterTurn(groupFolder: string, result: string): Promise<void> {
+export async function runAfterTurn(
+  groupFolder: string,
+  result: string,
+): Promise<void> {
   for (const plugin of plugins) {
     if (plugin.afterTurn) {
       try {
         await plugin.afterTurn(groupFolder, result);
       } catch (err) {
-        logger.error({ plugin: plugin.name, err }, 'Context plugin afterTurn error');
+        logger.error(
+          { plugin: plugin.name, err },
+          'Context plugin afterTurn error',
+        );
       }
     }
   }

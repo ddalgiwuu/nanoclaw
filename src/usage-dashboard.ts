@@ -194,8 +194,7 @@ async function fetchUsageForToken(
  * Fetch Claude usage data using the CLAUDE_CODE_OAUTH_TOKEN env var.
  */
 export async function fetchClaudeUsage(): Promise<ClaudeUsageData | null> {
-  const token =
-    process.env.CLAUDE_CODE_OAUTH_TOKEN || getCurrentToken();
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN || getCurrentToken();
   if (!token) {
     logger.debug('No Claude OAuth token available for usage check');
     return null;

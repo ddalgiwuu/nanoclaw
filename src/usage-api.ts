@@ -35,21 +35,28 @@ function loadCache(): void {
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-      if (data.fetchedAt && Date.now() - data.fetchedAt < CACHE_TTL_MS * 12) { // 1 hour max stale
+      if (data.fetchedAt && Date.now() - data.fetchedAt < CACHE_TTL_MS * 12) {
+        // 1 hour max stale
         usageCache = data;
       }
     }
-  } catch { /* start fresh */ }
+  } catch {
+    /* start fresh */
+  }
 }
 
 function saveCache(data: ClaudeUsageData): void {
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     fs.writeFileSync(CACHE_FILE, JSON.stringify(data));
-  } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
 }
 
-export async function fetchClaudeUsage(oauthToken: string): Promise<ClaudeUsageData | null> {
+export async function fetchClaudeUsage(
+  oauthToken: string,
+): Promise<ClaudeUsageData | null> {
   // Check cache
   if (usageCache && Date.now() - usageCache.fetchedAt < CACHE_TTL_MS) {
     return usageCache;
@@ -70,12 +77,32 @@ export async function fetchClaudeUsage(oauthToken: string): Promise<ClaudeUsageD
       return usageCache; // Return stale cache
     }
 
-    const body = await res.json() as Record<string, any>;
+    const body = (await res.json()) as Record<string, any>;
     const data: ClaudeUsageData = {
-      five_hour: body.five_hour ? { utilization: body.five_hour.utilization, resets_at: body.five_hour.resets_at || '' } : undefined,
-      seven_day: body.seven_day ? { utilization: body.seven_day.utilization, resets_at: body.seven_day.resets_at || '' } : undefined,
-      seven_day_sonnet: body.seven_day_sonnet ? { utilization: body.seven_day_sonnet.utilization, resets_at: body.seven_day_sonnet.resets_at || '' } : undefined,
-      seven_day_opus: body.seven_day_opus ? { utilization: body.seven_day_opus.utilization, resets_at: body.seven_day_opus.resets_at || '' } : undefined,
+      five_hour: body.five_hour
+        ? {
+            utilization: body.five_hour.utilization,
+            resets_at: body.five_hour.resets_at || '',
+          }
+        : undefined,
+      seven_day: body.seven_day
+        ? {
+            utilization: body.seven_day.utilization,
+            resets_at: body.seven_day.resets_at || '',
+          }
+        : undefined,
+      seven_day_sonnet: body.seven_day_sonnet
+        ? {
+            utilization: body.seven_day_sonnet.utilization,
+            resets_at: body.seven_day_sonnet.resets_at || '',
+          }
+        : undefined,
+      seven_day_opus: body.seven_day_opus
+        ? {
+            utilization: body.seven_day_opus.utilization,
+            resets_at: body.seven_day_opus.resets_at || '',
+          }
+        : undefined,
       fetchedAt: Date.now(),
     };
 
@@ -89,7 +116,9 @@ export async function fetchClaudeUsage(oauthToken: string): Promise<ClaudeUsageD
   }
 }
 
-export async function fetchClaudeProfile(oauthToken: string): Promise<ClaudeProfile | null> {
+export async function fetchClaudeProfile(
+  oauthToken: string,
+): Promise<ClaudeProfile | null> {
   if (profileCache) return profileCache;
 
   try {
@@ -104,7 +133,7 @@ export async function fetchClaudeProfile(oauthToken: string): Promise<ClaudeProf
 
     if (!res.ok) return null;
 
-    const body = await res.json() as Record<string, any>;
+    const body = (await res.json()) as Record<string, any>;
     profileCache = { email: body.email || '', plan: body.plan };
     return profileCache;
   } catch {
@@ -118,7 +147,9 @@ export function formatUsageReport(data: ClaudeUsageData): string {
   if (data.five_hour) {
     const pct = Math.round(data.five_hour.utilization * 100);
     const bar = progressBar(pct);
-    lines.push(`\u2022 5h: ${bar} ${pct}%${data.five_hour.resets_at ? ` (resets ${formatTime(data.five_hour.resets_at)})` : ''}`);
+    lines.push(
+      `\u2022 5h: ${bar} ${pct}%${data.five_hour.resets_at ? ` (resets ${formatTime(data.five_hour.resets_at)})` : ''}`,
+    );
   }
   if (data.seven_day) {
     const pct = Math.round(data.seven_day.utilization * 100);
@@ -144,7 +175,10 @@ function progressBar(pct: number): string {
 function formatTime(isoStr: string): string {
   try {
     const d = new Date(isoStr);
-    return d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   } catch {
     return isoStr;
   }

@@ -37,7 +37,11 @@ export type FallbackTriggerReason =
 
 export type FallbackTriggerResult =
   | { shouldFallback: false; reason: '' }
-  | { shouldFallback: true; reason: FallbackTriggerReason; retryAfterMs?: number };
+  | {
+      shouldFallback: true;
+      reason: FallbackTriggerReason;
+      retryAfterMs?: number;
+    };
 
 export interface FallbackState {
   cooldownUntil: number;
@@ -129,18 +133,27 @@ function loadConfig(): FallbackConfig {
   ]);
 
   const baseUrl = process.env.FALLBACK_BASE_URL || env.FALLBACK_BASE_URL || '';
-  const authToken = process.env.FALLBACK_AUTH_TOKEN || env.FALLBACK_AUTH_TOKEN || '';
+  const authToken =
+    process.env.FALLBACK_AUTH_TOKEN || env.FALLBACK_AUTH_TOKEN || '';
   const model = process.env.FALLBACK_MODEL || env.FALLBACK_MODEL || '';
   const explicitlyDisabled =
-    (process.env.FALLBACK_ENABLED || env.FALLBACK_ENABLED || '').toLowerCase() === 'false';
+    (
+      process.env.FALLBACK_ENABLED ||
+      env.FALLBACK_ENABLED ||
+      ''
+    ).toLowerCase() === 'false';
 
   _config = {
     enabled: !explicitlyDisabled && Boolean(baseUrl && authToken && model),
-    providerName: process.env.FALLBACK_PROVIDER_NAME || env.FALLBACK_PROVIDER_NAME || 'fallback',
+    providerName:
+      process.env.FALLBACK_PROVIDER_NAME ||
+      env.FALLBACK_PROVIDER_NAME ||
+      'fallback',
     baseUrl,
     authToken,
     model,
-    smallModel: process.env.FALLBACK_SMALL_MODEL || env.FALLBACK_SMALL_MODEL || model,
+    smallModel:
+      process.env.FALLBACK_SMALL_MODEL || env.FALLBACK_SMALL_MODEL || model,
     defaultCooldownMs: parseInt(
       process.env.FALLBACK_COOLDOWN_MS || env.FALLBACK_COOLDOWN_MS || '600000',
       10,
@@ -221,7 +234,10 @@ export function getActiveProvider(): string {
  * Mark Claude as rate-limited. All subsequent requests will route to
  * the fallback provider until the cooldown expires.
  */
-export function markPrimaryCooldown(reason: string, retryAfterMs?: number): void {
+export function markPrimaryCooldown(
+  reason: string,
+  retryAfterMs?: number,
+): void {
   const config = loadConfig();
   const durationMs = retryAfterMs || config.defaultCooldownMs;
   const now = Date.now();
@@ -246,7 +262,10 @@ export function markPrimaryCooldown(reason: string, retryAfterMs?: number): void
 /** Manually clear cooldown (e.g. after a successful Claude response). */
 export function clearCooldown(): void {
   if (cooldown) {
-    logger.info({ reason: cooldown.reason }, 'Claude cooldown cleared manually');
+    logger.info(
+      { reason: cooldown.reason },
+      'Claude cooldown cleared manually',
+    );
     cooldown = null;
   }
 }
@@ -293,14 +312,18 @@ export function getFallbackEnvOverrides(): Record<string, string> {
  * Inspect an agent error string and decide whether it warrants
  * a provider fallback.
  */
-export function detectFallbackTrigger(error?: string | null): FallbackTriggerResult {
+export function detectFallbackTrigger(
+  error?: string | null,
+): FallbackTriggerResult {
   if (!error) return { shouldFallback: false, reason: '' };
 
   // 429 / rate limit (highest priority)
   if (isRateLimitError(error)) {
     // Try to extract retry-after from error text
     const retryMatch = error.match(/retry.?after[:\s]*(\d+)/i);
-    const retryAfterMs = retryMatch ? parseInt(retryMatch[1], 10) * 1000 : undefined;
+    const retryAfterMs = retryMatch
+      ? parseInt(retryMatch[1], 10) * 1000
+      : undefined;
     return { shouldFallback: true, reason: 'rate-limit', retryAfterMs };
   }
 

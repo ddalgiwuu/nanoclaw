@@ -10,7 +10,11 @@ export interface PreviewSession {
 
 export interface PreviewDeps {
   sendMessage: (chatJid: string, text: string) => Promise<string | null>;
-  editMessage?: (chatJid: string, messageId: string, text: string) => Promise<void>;
+  editMessage?: (
+    chatJid: string,
+    messageId: string,
+    text: string,
+  ) => Promise<void>;
   minUpdateIntervalMs?: number;
 }
 
@@ -57,7 +61,10 @@ export async function updatePreview(
       await deps.editMessage(session.chatJid, session.messageId, newContent);
       session.lastUpdateAt = now;
     } catch (err) {
-      logger.debug({ chatJid: session.chatJid, err }, 'Preview edit failed, will retry');
+      logger.debug(
+        { chatJid: session.chatJid, err },
+        'Preview edit failed, will retry',
+      );
     }
   }
 }

@@ -27,7 +27,7 @@ export function getRegisteredChannelNames(): string[] {
   const channelFilter = process.env.NANOCLAW_CHANNEL;
   if (channelFilter) {
     // Only return channels matching the filter (e.g., NANOCLAW_CHANNEL=discord)
-    return [...registry.keys()].filter(name => name === channelFilter);
+    return [...registry.keys()].filter((name) => name === channelFilter);
   }
   return [...registry.keys()];
 }

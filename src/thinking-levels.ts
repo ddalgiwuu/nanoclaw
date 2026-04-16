@@ -1,13 +1,33 @@
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'adaptive';
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'adaptive';
 
 const LEVEL_ALIASES: Record<string, ThinkingLevel> = {
-  'off': 'off', 'none': 'off', '0': 'off',
-  'minimal': 'minimal', 'min': 'minimal', '1': 'minimal',
-  'low': 'low', '2': 'low',
-  'medium': 'medium', 'med': 'medium', 'default': 'medium', '3': 'medium',
-  'high': 'high', '4': 'high',
-  'xhigh': 'xhigh', 'ultra': 'xhigh', 'max': 'xhigh', '5': 'xhigh',
-  'adaptive': 'adaptive', 'auto': 'adaptive',
+  off: 'off',
+  none: 'off',
+  '0': 'off',
+  minimal: 'minimal',
+  min: 'minimal',
+  '1': 'minimal',
+  low: 'low',
+  '2': 'low',
+  medium: 'medium',
+  med: 'medium',
+  default: 'medium',
+  '3': 'medium',
+  high: 'high',
+  '4': 'high',
+  xhigh: 'xhigh',
+  ultra: 'xhigh',
+  max: 'xhigh',
+  '5': 'xhigh',
+  adaptive: 'adaptive',
+  auto: 'adaptive',
 };
 
 export interface ThinkingDirective {
@@ -18,7 +38,9 @@ export interface ThinkingDirective {
 /**
  * Parse /think, /think:level, /t level directives from message content
  */
-export function parseThinkingDirective(content: string): ThinkingDirective | null {
+export function parseThinkingDirective(
+  content: string,
+): ThinkingDirective | null {
   const trimmed = content.replace(/^@\w+\s*/, '').trim();
 
   // /think:level or /t:level

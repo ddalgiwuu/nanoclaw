@@ -23,7 +23,11 @@ export function configureLoopDetector(config: Partial<LoopConfig>): LoopConfig {
   return { ...DEFAULT_CONFIG, ...config };
 }
 
-export function recordAction(groupFolder: string, action: string, config?: LoopConfig): void {
+export function recordAction(
+  groupFolder: string,
+  action: string,
+  config?: LoopConfig,
+): void {
   const cfg = config || DEFAULT_CONFIG;
   let history = actionHistory.get(groupFolder);
   if (!history) {
@@ -37,7 +41,10 @@ export function recordAction(groupFolder: string, action: string, config?: LoopC
   }
 }
 
-export function detectLoop(groupFolder: string, config?: LoopConfig): {
+export function detectLoop(
+  groupFolder: string,
+  config?: LoopConfig,
+): {
   looping: boolean;
   pattern?: string;
   count?: number;
@@ -48,7 +55,7 @@ export function detectLoop(groupFolder: string, config?: LoopConfig): {
   if (!history || history.length < 3) return { looping: false };
 
   // Check for direct repetition (same action N times in a row)
-  const actions = history.map(h => h.action);
+  const actions = history.map((h) => h.action);
   let repeatCount = 1;
   const lastAction = actions[actions.length - 1];
   for (let i = actions.length - 2; i >= 0; i--) {
@@ -57,30 +64,64 @@ export function detectLoop(groupFolder: string, config?: LoopConfig): {
   }
 
   if (repeatCount >= cfg.blockThreshold) {
-    logger.warn({ groupFolder, action: lastAction, count: repeatCount }, 'Loop detected (block threshold)');
-    return { looping: true, pattern: lastAction, count: repeatCount, severity: 'block' };
+    logger.warn(
+      { groupFolder, action: lastAction, count: repeatCount },
+      'Loop detected (block threshold)',
+    );
+    return {
+      looping: true,
+      pattern: lastAction,
+      count: repeatCount,
+      severity: 'block',
+    };
   }
   if (repeatCount >= cfg.warnThreshold) {
-    logger.warn({ groupFolder, action: lastAction, count: repeatCount }, 'Loop detected (warn threshold)');
-    return { looping: true, pattern: lastAction, count: repeatCount, severity: 'warn' };
+    logger.warn(
+      { groupFolder, action: lastAction, count: repeatCount },
+      'Loop detected (warn threshold)',
+    );
+    return {
+      looping: true,
+      pattern: lastAction,
+      count: repeatCount,
+      severity: 'warn',
+    };
   }
 
   // Check for ping-pong pattern (A→B→A→B)
   if (actions.length >= 4) {
     const last4 = actions.slice(-4);
-    if (last4[0] === last4[2] && last4[1] === last4[3] && last4[0] !== last4[1]) {
+    if (
+      last4[0] === last4[2] &&
+      last4[1] === last4[3] &&
+      last4[0] !== last4[1]
+    ) {
       // Count how long this ping-pong has been going
       let ppCount = 2;
       for (let i = actions.length - 5; i >= 0; i -= 2) {
-        if (actions[i] === last4[0] && i + 1 < actions.length && actions[i + 1] === last4[1]) {
+        if (
+          actions[i] === last4[0] &&
+          i + 1 < actions.length &&
+          actions[i + 1] === last4[1]
+        ) {
           ppCount++;
         } else break;
       }
       if (ppCount * 2 >= cfg.blockThreshold) {
-        return { looping: true, pattern: `${last4[0]} ↔ ${last4[1]}`, count: ppCount * 2, severity: 'block' };
+        return {
+          looping: true,
+          pattern: `${last4[0]} ↔ ${last4[1]}`,
+          count: ppCount * 2,
+          severity: 'block',
+        };
       }
       if (ppCount * 2 >= cfg.warnThreshold) {
-        return { looping: true, pattern: `${last4[0]} ↔ ${last4[1]}`, count: ppCount * 2, severity: 'warn' };
+        return {
+          looping: true,
+          pattern: `${last4[0]} ↔ ${last4[1]}`,
+          count: ppCount * 2,
+          severity: 'warn',
+        };
       }
     }
   }
